@@ -4400,6 +4400,34 @@ def reassociate_ir_codeset():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/system/reboot", methods=["POST"])
+def system_reboot():
+    """Reboot the remote."""
+    if not _remote_client:
+        return jsonify({"error": "Not connected to remote"}), 500
+
+    try:
+        _remote_client.reboot_remote()
+        return jsonify({"success": True, "message": "Reboot command sent"}), 200
+    except SyncAPIError as e:
+        _LOG.error("Failed to reboot remote: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/system/power-off", methods=["POST"])
+def system_power_off():
+    """Power off the remote."""
+    if not _remote_client:
+        return jsonify({"error": "Not connected to remote"}), 500
+
+    try:
+        _remote_client.power_off_remote()
+        return jsonify({"success": True, "message": "Power off command sent"}), 200
+    except SyncAPIError as e:
+        _LOG.error("Failed to power off remote: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/backups/create", methods=["POST"])
 def create_backup_now():
     """Create a backup of all integration configs that support backup."""

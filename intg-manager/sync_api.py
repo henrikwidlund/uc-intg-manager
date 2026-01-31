@@ -7,21 +7,21 @@ Uses the `requests` library instead of aiohttp to avoid async context issues.
 :license: Mozilla Public License Version 2.0, see LICENSE for more details.
 """
 
+import asyncio
+import concurrent.futures
 import json
 import logging
 import os
 import re
-from typing import Any
 from datetime import datetime
-import asyncio
-from ucapi_framework import find_orphaned_entities
+from typing import Any
 
 import certifi
 import requests
-from requests.auth import HTTPBasicAuth
-from packaging.version import Version, InvalidVersion
-
 from const import GITHUB_API_BASE, KNOWN_INTEGRATIONS_URL
+from packaging.version import InvalidVersion, Version
+from requests.auth import HTTPBasicAuth
+from ucapi_framework import find_orphaned_entities
 
 _LOG = logging.getLogger(__name__)
 
@@ -136,6 +136,36 @@ class SyncRemoteClient:
             return False
         except SyncAPIError:
             return False
+
+    def reboot_remote(self) -> bool:
+        """
+        Reboot the remote.
+
+        :return: True if successful
+        :raises SyncAPIError: If reboot command fails
+        """
+        try:
+            self._request("POST", "/system?cmd=REBOOT")
+            _LOG.info("Remote reboot command sent")
+            return True
+        except SyncAPIError as e:
+            _LOG.error("Failed to reboot remote: %s", e)
+            raise
+
+    def power_off_remote(self) -> bool:
+        """
+        Power off the remote.
+
+        :return: True if successful
+        :raises SyncAPIError: If power off command fails
+        """
+        try:
+            self._request("POST", "/system?cmd=POWER_OFF")
+            _LOG.info("Remote power off command sent")
+            return True
+        except SyncAPIError as e:
+            _LOG.error("Failed to power off remote: %s", e)
+            raise
 
     def get_drivers(self) -> list[dict[str, Any]]:
         """Get list of all integration drivers."""
@@ -267,8 +297,19 @@ class SyncRemoteClient:
         :raises SyncAPIError: If the request fails
         """
         try:
-            # Use asyncio.run() which requires no event loop to be running
-            return asyncio.run(self.find_orphan_entities_async())
+            # Check if an event loop is already running
+            try:
+                asyncio.get_running_loop()
+                # If we get here, a loop is running - we need to use a different approach
+
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(
+                        lambda: asyncio.run(self.find_orphan_entities_async())
+                    )
+                    return future.result()
+            except RuntimeError:
+                # No event loop running, safe to use asyncio.run()
+                return asyncio.run(self.find_orphan_entities_async())
         except Exception as e:
             _LOG.error("Failed to get orphan entities: %s", e)
             raise SyncAPIError(f"Failed to get orphan entities: {e}") from e
@@ -338,9 +379,7 @@ class SyncRemoteClient:
             _LOG.error("Failed to delete custom IR codeset %s: %s", device_id, e)
             raise
 
-    def create_remote(
-        self, remote_name: str, codeset_id: str
-    ) -> dict[str, Any]:
+    def create_remote(self, remote_name: str, codeset_id: str) -> dict[str, Any]:
         """
         Create a new remote with a custom codeset.
 
