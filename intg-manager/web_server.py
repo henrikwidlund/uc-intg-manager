@@ -48,7 +48,13 @@ from backup_service import (
 from const import WEB_SERVER_PORT, Settings, API_DELAY, MANAGER_DATA_FILE
 from log_handler import get_log_entries, get_log_handler
 from migration_service import extract_migration_mappings
-from sync_api import SyncRemoteClient, SyncGitHubClient, load_registry, SyncAPIError
+from sync_api import (
+    SyncRemoteClient,
+    SyncGitHubClient,
+    load_registry,
+    SyncAPIError,
+    find_orphaned_ir_codesets,
+)
 from packaging.version import Version, InvalidVersion
 
 _LOG = logging.getLogger(__name__)
@@ -4154,19 +4160,24 @@ def inject_system_messages_count():
 
 @app.context_processor
 def inject_orphaned_entities_count():
-    """Inject orphaned entities count into all templates."""
+    """Inject orphaned entities and IR codesets count into all templates."""
     if not _remote_client:
         return {"orphaned_entities_count": 0}
-    
+
     try:
+        # Count orphaned entities by activity
         orphaned_entities = _remote_client.find_orphan_entities()
-        # Group by activity to get unique count
         activity_ids = set()
         for entity in orphaned_entities:
             activity_id = entity.get("activity_id")
             if activity_id:
                 activity_ids.add(activity_id)
-        return {"orphaned_entities_count": len(activity_ids)}
+
+        orphaned_codesets = find_orphaned_ir_codesets(_remote_client)
+
+        # Total count is activities + IR codesets
+        total_count = len(activity_ids) + len(orphaned_codesets)
+        return {"orphaned_entities_count": total_count}
     except Exception as e:
         _LOG.debug("Failed to get orphaned entities count: %s", e)
         return {"orphaned_entities_count": 0}
@@ -4177,16 +4188,16 @@ def system_messages_page():
     """Render the system messages page and mark displayed messages as read."""
     try:
         messages_service = get_system_messages_service()
-        
+
         # Get unread and read messages
         unread_messages = messages_service.get_unread_messages()
         read_messages = messages_service.get_read_messages()
-        
+
         # Mark all currently displayed unread messages as read
         if unread_messages:
             message_ids = [msg.id for msg in unread_messages]
             messages_service.mark_messages_as_read(message_ids)
-        
+
         return render_template(
             "system_messages.html",
             unread_messages=unread_messages,
@@ -4207,15 +4218,19 @@ def refresh_system_messages():
     try:
         messages_service = get_system_messages_service()
         success = messages_service.fetch_from_github()
-        
+
         if success:
             _LOG.info("System messages refreshed from GitHub")
             # Return success response that triggers page reload
-            return jsonify({"success": True, "message": "Messages refreshed successfully"})
+            return jsonify(
+                {"success": True, "message": "Messages refreshed successfully"}
+            )
         else:
             _LOG.warning("Failed to refresh system messages from GitHub")
-            return jsonify({"success": False, "message": "Failed to fetch from GitHub"}), 500
-            
+            return jsonify(
+                {"success": False, "message": "Failed to fetch from GitHub"}
+            ), 500
+
     except Exception as e:
         _LOG.error("Error refreshing system messages: %s", e)
         return jsonify({"success": False, "message": str(e)}), 500
@@ -4294,6 +4309,97 @@ def get_orphaned_entities():
         """
 
 
+@app.route("/api/diagnostics/orphaned-ir-codesets")
+def get_orphaned_ir_codesets():
+    """Get orphaned IR codesets data as HTML partial for HTMX."""
+    if not _remote_client:
+        return render_template(
+            "partials/orphaned_ir_codesets.html",
+            orphaned_codesets=[],
+        )
+
+    try:
+        orphaned_codesets = find_orphaned_ir_codesets(_remote_client)
+        _LOG.debug("Found %d orphaned IR codesets", len(orphaned_codesets))
+
+        return render_template(
+            "partials/orphaned_ir_codesets.html",
+            orphaned_codesets=orphaned_codesets,
+        )
+    except SyncAPIError as e:
+        _LOG.error("Failed to fetch orphaned IR codesets: %s", e)
+        return f"""
+        <div class="bg-red-900/20 border border-red-500/30 rounded-lg p-6">
+            <div class="flex items-start gap-3">
+                <i class="fa-solid fa-triangle-exclamation text-red-400 text-xl"></i>
+                <div>
+                    <h3 class="text-white font-medium mb-1">Error Loading IR Codesets</h3>
+                    <p class="text-sm text-gray-300">{e}</p>
+                </div>
+            </div>
+        </div>
+        """
+
+
+@app.route("/api/ir/codesets/<device_id>/delete-confirm")
+def ir_codeset_delete_confirm(device_id: str):
+    """Render delete confirmation modal for IR codeset."""
+    # Get codeset info from query params or find it
+    device_name = request.args.get("device_name", device_id)
+
+    return render_template(
+        "partials/modal_delete_ir_codeset.html",
+        device_id=device_id,
+        device_name=device_name,
+    )
+
+
+@app.route("/api/ir/codesets/<device_id>", methods=["DELETE"])
+def delete_ir_codeset(device_id: str):
+    """Delete a custom IR codeset."""
+    if not _remote_client:
+        return jsonify({"error": "Not connected to remote"}), 500
+
+    try:
+        _remote_client.delete_custom_ir_codeset(device_id)
+        _LOG.info("Deleted IR codeset: %s", device_id)
+        # Return empty response to remove the element from DOM
+        return "", 200
+    except SyncAPIError as e:
+        _LOG.error("Failed to delete IR codeset %s: %s", device_id, e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/ir/codesets/reassociate", methods=["POST"])
+def reassociate_ir_codeset():
+    """Create a new remote associated with a custom IR codeset."""
+    if not _remote_client:
+        return jsonify({"error": "Not connected to remote"}), 500
+
+    try:
+        # Handle both JSON and form data
+        if request.is_json:
+            data = request.get_json()
+        else:
+            data = request.form.to_dict()
+            
+        device_id = data.get("device_id")
+        remote_name = data.get("remote_name")
+
+        if not device_id or not remote_name:
+            return jsonify({"error": "Missing device_id or remote_name"}), 400
+
+        # Create remote with custom codeset ID
+        _remote_client.create_remote(remote_name, device_id)
+
+        _LOG.info("Created remote '%s' for codeset %s", remote_name, device_id)
+        # Return empty response to remove the element from DOM
+        return "", 200
+    except SyncAPIError as e:
+        _LOG.error("Failed to reassociate IR codeset: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/backups/create", methods=["POST"])
 def create_backup_now():
     """Create a backup of all integration configs that support backup."""
@@ -4352,7 +4458,7 @@ def create_backup_now():
             )
         if skipped:
             result_parts.append(
-                f"<span class='text-gray-400'>Skipped (no backup support): {len(skipped)}</span>"
+                f"<span class='text-gray-400'>Skipped (integration does not support backup): {len(skipped)}</span>"
             )
         if failed:
             result_parts.append(
@@ -4940,12 +5046,12 @@ class WebServer:
             _LOG.debug("Checking for new system messages from GitHub...")
             messages_service = get_system_messages_service()
             success = messages_service.fetch_from_github()
-            
+
             if success:
                 _LOG.info("System messages updated from GitHub")
             else:
                 _LOG.debug("No new system messages or fetch failed")
-                
+
         except Exception as e:
             _LOG.warning("Failed to check system messages: %s", e)
 

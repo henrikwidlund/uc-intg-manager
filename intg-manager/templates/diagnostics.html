@@ -8,8 +8,25 @@
     <p class="text-sm sm:text-base text-gray-400">Identify and troubleshoot issues with your integrations and activities</p>
 </div>
 
+<!-- Quick Navigation -->
+<div class="mb-8 bg-uc-card border border-uc-border rounded-lg p-4">
+    <h3 class="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">Jump to Section</h3>
+    <div class="flex flex-wrap gap-2">
+        <a href="#orphaned-entities" 
+           class="px-4 py-2 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 hover:border-red-500/50 text-red-300 hover:text-red-200 rounded-lg font-medium transition-colors flex items-center gap-2 text-sm">
+            <i class="fa-solid fa-link-slash"></i>
+            Orphaned Entities
+        </a>
+        <a href="#orphaned-ir-codesets" 
+           class="px-4 py-2 bg-orange-500/10 hover:bg-orange-500/20 border border-orange-500/30 hover:border-orange-500/50 text-orange-300 hover:text-orange-200 rounded-lg font-medium transition-colors flex items-center gap-2 text-sm">
+            <i class="fa-solid fa-wave-square"></i>
+            Orphaned IR Codesets
+        </a>
+    </div>
+</div>
+
 <!-- Orphaned Entities Section -->
-<div class="mb-8">
+<div id="orphaned-entities" class="mb-8 scroll-mt-4">
     <div class="mb-4 flex items-center gap-3">
         <div class="w-10 h-10 bg-red-500/20 rounded-lg flex items-center justify-center">
             <i class="fa-solid fa-link-slash text-red-400 text-lg"></i>
@@ -70,6 +87,72 @@
                 <p class="text-sm text-gray-300 mt-2">
                     To fix orphaned entities, remove the missing entity references from the affected activities in the Remote Configurator, 
                     then click Refresh to verify the changes.
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Orphaned IR Codesets Section -->
+<div id="orphaned-ir-codesets" class="mb-8 scroll-mt-4">
+    <div class="mb-4 flex items-center gap-3">
+        <div class="w-10 h-10 bg-orange-500/20 rounded-lg flex items-center justify-center">
+            <i class="fa-solid fa-wave-square text-orange-400 text-lg"></i>
+        </div>
+        <div>
+            <h2 class="text-xl font-semibold text-white">Orphaned IR Codesets</h2>
+            <p class="text-sm text-gray-400">Custom IR codesets not associated with any remote</p>
+        </div>
+    </div>
+
+    <!-- Action Bar -->
+    <div class="mb-6 flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
+        <div class="flex gap-3">
+            <button 
+                hx-get="/api/diagnostics/orphaned-ir-codesets"
+                hx-target="#orphaned-ir-codesets-content"
+                hx-swap="innerHTML"
+                class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors flex items-center gap-2">
+                <i class="fa-solid fa-arrows-rotate"></i>
+                Refresh
+            </button>
+            <a 
+                href="http://{{ remote_address }}/configurator/#/remotes"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg font-medium transition-colors flex items-center gap-2">
+                <i class="fa-solid fa-external-link"></i>
+                Open Remotes
+            </a>
+        </div>
+    </div>
+
+    <!-- Orphaned IR Codesets Container -->
+    <div id="orphaned-ir-codesets-content" 
+         hx-get="/api/diagnostics/orphaned-ir-codesets"
+         hx-trigger="load"
+         hx-swap="innerHTML">
+        <!-- Loading state -->
+        <div class="flex items-center justify-center py-12">
+            <div class="text-center">
+                <div class="spinner inline-block mb-4"></div>
+                <p class="text-gray-400">Loading IR codesets...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Info Card -->
+    <div class="mt-6 bg-blue-900/20 border border-blue-500/30 rounded-lg p-4">
+        <div class="flex items-start gap-3">
+            <i class="fa-solid fa-circle-info text-blue-400 text-xl mt-0.5"></i>
+            <div>
+                <h3 class="text-white font-medium mb-1">About Orphaned IR Codesets</h3>
+                <p class="text-sm text-gray-300">
+                    Orphaned IR codesets are custom infrared remote codes that are stored on your remote but not associated with any remote entity. 
+                    This can happen when IR remotes are deleted but their custom codesets remain.
+                </p>
+                <p class="text-sm text-gray-300 mt-2">
+                    You can either re-associate these codesets with a new remote entity or delete them if no longer needed.
                 </p>
             </div>
         </div>

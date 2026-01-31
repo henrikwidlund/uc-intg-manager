@@ -273,6 +273,94 @@ class SyncRemoteClient:
             _LOG.error("Failed to get orphan entities: %s", e)
             raise SyncAPIError(f"Failed to get orphan entities: {e}") from e
 
+    def get_ir_remotes(self, page: int = 1, limit: int = 100) -> list[dict[str, Any]]:
+        """
+        Get list of IR remotes.
+
+        :param page: Page number for pagination
+        :param limit: Number of results per page
+        :return: List of IR remote dictionaries
+        :raises SyncAPIError: If the request fails
+        """
+        try:
+            params = {"kind": "IR", "page": page, "limit": limit}
+            result = self._request("GET", "/remotes", params=params)
+            _LOG.debug("Found %d IR remotes", len(result) if result else 0)
+            return result if isinstance(result, list) else []
+        except Exception as e:
+            _LOG.error("Failed to get IR remotes: %s", e)
+            raise SyncAPIError(f"Failed to get IR remotes: {e}") from e
+
+    def get_remote_detail(self, entity_id: str) -> dict[str, Any]:
+        """
+        Get detailed information for a specific remote.
+
+        :param entity_id: The remote entity ID
+        :return: Remote details dictionary
+        :raises SyncAPIError: If the request fails
+        """
+        try:
+            result = self._request("GET", f"/remotes/{entity_id}")
+            _LOG.debug("Retrieved details for remote: %s", entity_id)
+            return result if isinstance(result, dict) else {}
+        except Exception as e:
+            _LOG.error("Failed to get remote detail for %s: %s", entity_id, e)
+            raise SyncAPIError(f"Failed to get remote detail: {e}") from e
+
+    def get_custom_ir_codesets(self) -> list[dict[str, Any]]:
+        """
+        Get list of custom IR codesets.
+
+        :return: List of custom IR codeset dictionaries
+        :raises SyncAPIError: If the request fails
+        """
+        try:
+            result = self._request("GET", "/ir/codes/custom")
+            _LOG.debug("Found %d custom IR codesets", len(result) if result else 0)
+            return result if isinstance(result, list) else []
+        except Exception as e:
+            _LOG.error("Failed to get custom IR codesets: %s", e)
+            raise SyncAPIError(f"Failed to get custom IR codesets: {e}") from e
+
+    def delete_custom_ir_codeset(self, device_id: str) -> bool:
+        """
+        Delete a custom IR codeset.
+
+        :param device_id: The custom IR codeset device ID
+        :return: True if successful
+        :raises SyncAPIError: If deletion fails
+        """
+        try:
+            self._request("DELETE", f"/ir/codes/custom/{device_id}")
+            _LOG.info("Deleted custom IR codeset: %s", device_id)
+            return True
+        except SyncAPIError as e:
+            _LOG.error("Failed to delete custom IR codeset %s: %s", device_id, e)
+            raise
+
+    def create_remote(
+        self, remote_name: str, codeset_id: str
+    ) -> dict[str, Any]:
+        """
+        Create a new remote with a custom codeset.
+
+        :param remote_name: Name for the remote
+        :param codeset_id: Custom codeset device ID (e.g., "ir.manufacturer.123")
+        :return: Created remote data
+        :raises SyncAPIError: If creation fails
+        """
+        try:
+            payload = {
+                "name": {"en": remote_name},
+                "codeset_id": codeset_id,
+            }
+            result = self._request("POST", "/remotes", json=payload)
+            _LOG.info("Created remote: %s with codeset: %s", remote_name, codeset_id)
+            return result if isinstance(result, dict) else {}
+        except Exception as e:
+            _LOG.error("Failed to create remote %s: %s", remote_name, e)
+            raise SyncAPIError(f"Failed to create remote: {e}") from e
+
     def delete_instance(self, instance_id: str) -> bool:
         """
         Delete an integration instance.
@@ -552,6 +640,80 @@ class SyncRemoteClient:
             "Deleting entity %s for integration: %s", full_entity_id, integration_id
         )
         return self._request("DELETE", f"/entities/{full_entity_id}")
+
+
+def find_orphaned_ir_codesets(api_client: SyncRemoteClient) -> list[dict[str, Any]]:
+    """
+    Find custom IR codesets that are not associated with any remote.
+
+    Only returns items from /ir/codes/custom that do not have a corresponding
+    ir.codeset.id found in any remote from /remotes.
+
+    :param api_client: SyncRemoteClient instance for API calls
+    :return: List of orphaned codesets with device_id and device_name
+    """
+    try:
+        # Get all IR remotes and extract associated codeset IDs
+        associated_codeset_ids = set()
+        page = 1
+        while True:
+            remotes = api_client.get_ir_remotes(page=page, limit=100)
+            if not remotes:
+                break
+
+            for remote in remotes:
+                entity_id = remote.get("entity_id")
+                if entity_id:
+                    # Get remote detail to find ir.codeset.id
+                    detail = api_client.get_remote_detail(entity_id)
+                    ir = detail.get("options", {}).get("ir", {})
+                    ir_codeset = ir.get("codeset")
+
+                    # Check if ir.codeset exists and has an id
+                    if ir_codeset and isinstance(ir_codeset, dict):
+                        codeset_id = ir_codeset.get("id")
+                        if codeset_id:
+                            associated_codeset_ids.add(codeset_id)
+                            _LOG.debug(
+                                "Remote %s has associated codeset: %s",
+                                entity_id,
+                                codeset_id,
+                            )
+
+            # If we got less than limit, we're done
+            if len(remotes) < 100:
+                break
+            page += 1
+
+        _LOG.debug("Found %d associated IR codeset IDs", len(associated_codeset_ids))
+
+        # Get all custom IR codesets
+        all_codesets = api_client.get_custom_ir_codesets()
+        _LOG.debug("Found %d total custom IR codesets", len(all_codesets))
+
+        # Find orphans - codesets not associated with any remote
+        orphaned = []
+        for codeset in all_codesets:
+            device_id = codeset.get("device_id")
+            device_name = codeset.get("device", device_id)
+
+            if device_id and device_id not in associated_codeset_ids:
+                _LOG.debug(
+                    "Orphaned codeset found: %s (ID: %s)", device_name, device_id
+                )
+                orphaned.append(
+                    {
+                        "device_id": device_id,
+                        "device_name": device_name,
+                    }
+                )
+
+        _LOG.info("Found %d orphaned IR codesets", len(orphaned))
+        return orphaned
+
+    except Exception as e:
+        _LOG.error("Failed to find orphaned IR codesets: %s", e)
+        return []
 
 
 class SyncGitHubClient:
