@@ -59,7 +59,10 @@ class Settings:
     and are persisted to settings.json.
     """
 
-    shutdown_on_battery: bool = True
+    settings_version: int = 1
+    """Version number for settings schema, used for migrations."""
+
+    shutdown_on_battery: bool = False
     """Shutdown web server when remote is on battery (not docked)."""
 
     auto_update: bool = False
@@ -87,9 +90,16 @@ class Settings:
                 settings_data = data.get("settings", {})
                 field_names = {f.name for f in fields(cls)}
                 _LOG.info("Loaded settings from %s", MANAGER_DATA_FILE)
-                return cls(
+
+                # Create settings instance
+                settings = cls(
                     **{k: v for k, v in settings_data.items() if k in field_names}
                 )
+
+                # Perform migrations based on settings_version
+                settings._migrate()
+
+                return settings
             except (json.JSONDecodeError, OSError) as e:
                 _LOG.warning(
                     "Failed to load settings from %s: %s", MANAGER_DATA_FILE, e
@@ -99,6 +109,32 @@ class Settings:
                 "Manager data file not found at %s, using defaults", MANAGER_DATA_FILE
             )
         return cls()
+
+    def _migrate(self) -> None:
+        """Migrate settings from older versions to current schema."""
+        current_version = self.settings_version
+        needs_save = False
+
+        # Migration from version 0 (no version field) to version 1
+        if current_version < 1:
+            # If user had the old default (True), migrate to new default (False)
+            # If user explicitly changed it to True, they keep True (we can't distinguish)
+            # If user explicitly changed it to False, they keep False
+            if self.shutdown_on_battery is True:
+                _LOG.info(
+                    "Migrating settings v%d->v1: Changing shutdown_on_battery default from True to False",
+                    current_version,
+                )
+                self.shutdown_on_battery = False
+                needs_save = True
+
+            self.settings_version = 1
+            needs_save = True
+
+        # Save if any migrations were applied
+        if needs_save:
+            self.save()
+            _LOG.info("Settings migrated to version %d", self.settings_version)
 
     def save(self) -> None:
         """Save settings to manager data file."""
