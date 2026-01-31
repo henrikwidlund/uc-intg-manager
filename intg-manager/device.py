@@ -21,7 +21,7 @@ from const import (
 )
 from remote_api import RemoteAPIClient, RemoteAPIError
 from web_server import WebServer
-from ucapi_framework import BaseConfigManager, PollingDevice
+from ucapi_framework import BaseConfigManager, PollingDevice, BaseIntegrationDriver
 
 _LOG = logging.getLogger(__name__)
 
@@ -41,6 +41,7 @@ class IntegrationManagerDevice(PollingDevice):
         device_config: RemoteConfig,
         loop: AbstractEventLoop | None,
         config_manager: BaseConfigManager | None = None,
+        driver: BaseIntegrationDriver | None = None,
     ) -> None:
         """
         Initialize the device.
@@ -54,6 +55,7 @@ class IntegrationManagerDevice(PollingDevice):
             loop=loop,
             config_manager=config_manager,
             poll_interval=POWER_POLL_INTERVAL,
+            driver=driver,
         )
 
         self._device_config: RemoteConfig = device_config
