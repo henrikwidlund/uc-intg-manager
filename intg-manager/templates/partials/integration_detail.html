@@ -33,12 +33,12 @@
                     <span class="text-sm text-gray-400">Status</span>
                     <div class="flex items-center space-x-2">
                         {% if integration.state == 'CONNECTED' or integration.state == 'OK' %}
-                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-500/20 text-green-300">
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-500/10 text-green-300">
                             <span class="w-1.5 h-1.5 mr-1.5 bg-green-400 rounded-full"></span>
                             Connected
                         </span>
                         {% else %}
-                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-500/20 text-gray-300">
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-500/10 text-gray-300">
                             {{ integration.state }}
                         </span>
                         {% endif %}
@@ -103,7 +103,7 @@
             <div class="flex items-center justify-end space-x-3 p-6 border-t border-uc-border">
                 {% if integration.update_available %}
                 <button 
-                    class="inline-flex items-center px-4 py-2 bg-yellow-500/20 hover:bg-yellow-500/30 text-yellow-300 font-medium rounded-lg transition-colors"
+                    class="inline-flex items-center px-4 py-2 bg-yellow-500/10 hover:bg-yellow-500/30 text-yellow-300 font-medium rounded-lg transition-colors"
                     hx-post="/api/integration/{{ integration.instance_id }}/update"
                     hx-swap="none">
                     <svg class="h-4 w-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">

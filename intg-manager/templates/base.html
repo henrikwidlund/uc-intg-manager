@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Integration Manager{% endblock %} - Unfolded Circle</title>
     
+    <!-- Favicon -->
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=2">
+    
     <!-- Tailwind CSS via CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -13,13 +16,13 @@
             theme: {
                 extend: {
                     colors: {
-                        'uc-primary': '#6366f1',
-                        'uc-secondary': '#4f46e5',
-                        'uc-accent': '#818cf8',
-                        'uc-dark': '#1e1e2e',
-                        'uc-darker': '#11111b',
-                        'uc-card': '#313244',
-                        'uc-border': '#45475a',
+                        'uc-primary': '#1e40af',
+                        'uc-secondary': '#1e3a8a',
+                        'uc-accent': '#2563eb',
+                        'uc-dark': '#1e293b',
+                        'uc-darker': '#0f172a',
+                        'uc-card': 'rgba(21, 38, 65, 1)',
+                        'uc-border': 'rgba(37, 58, 92, 1)',
                     }
                 }
             }
@@ -101,9 +104,7 @@
                         </button>
                         
                         <div class="flex-shrink-0 flex items-center space-x-2 sm:space-x-3">
-                            <svg class="h-6 sm:h-8 w-6 sm:w-8 text-uc-primary" viewBox="0 0 24 24" fill="currentColor">
-                                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
-                            </svg>
+                            <img src="/static/logo.svg" class="h-6 sm:h-8 w-6 sm:w-8" alt="Integration Manager Logo">
                             <div>
                                 <h1 class="text-base sm:text-xl font-bold text-white">Integration Manager</h1>
                             </div>
