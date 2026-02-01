@@ -284,7 +284,7 @@
                 {% set owner = path_parts[0] %}
                 {% set repo = path_parts[1] %}
                 <button 
-                    class="inline-flex items-center px-3 py-1.5 bg-uc-darker hover:bg-uc-card text-gray-400 hover:text-white text-xs font-medium rounded-lg transition-colors"
+                    class="inline-flex items-center px-3 py-1.5 bg-gray-200 dark:bg-uc-darker hover:bg-gray-300 dark:hover:bg-uc-card text-gray-700 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white text-xs font-medium rounded-lg transition-colors"
                     hx-get="/api/version-selector/{{ owner }}/{{ repo }}/{{ integration.driver_id }}"
                     hx-target="#modal-content"
                     hx-swap="innerHTML"
@@ -374,13 +374,13 @@
     </div>
     <!-- Overlay for install/update - positioned as direct child of card for proper centering -->
     {% if not integration.official and not integration.external and (not integration.installed or integration.driver_installed or (integration.update_available and integration.can_update)) %}
-    <div id="overlay-{{ integration.driver_id }}" class="hidden absolute inset-0 bg-uc-darker/90 rounded-xl z-10 pointer-events-none">
+    <div id="overlay-{{ integration.driver_id }}" class="hidden absolute inset-0 bg-gray-200/90 dark:bg-uc-darker/90 rounded-xl z-10 pointer-events-none">
         <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center">
             <svg class="animate-spin h-8 w-8 text-uc-primary mb-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
             </svg>
-            <span class="text-sm text-gray-300">{% if integration.update_available %}Updating...{% else %}Installing...{% endif %}</span>
+            <span class="text-sm text-gray-700 dark:text-gray-300">{% if integration.update_available %}Updating...{% else %}Installing...{% endif %}</span>
         </div>
     </div>
     {% endif %}
@@ -389,26 +389,26 @@
     {% if integration.driver_installed and not integration.official and not integration.external %}
     <div id="upgrade-overlay-{{ integration.driver_id }}" 
          data-current-version="{{ integration.version }}"
-         class="hidden absolute inset-0 bg-uc-darker/90 rounded-xl z-10 pointer-events-none">
+         class="hidden absolute inset-0 bg-gray-200/90 dark:bg-uc-darker/90 rounded-xl z-10 pointer-events-none">
         <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center">
             <svg class="animate-spin h-8 w-8 text-yellow-400 mb-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 714 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
             </svg>
-            <span class="text-sm text-gray-300 upgrade-text">Upgrading...</span>
+            <span class="text-sm text-gray-700 dark:text-gray-300 upgrade-text">Upgrading...</span>
         </div>
     </div>
     {% endif %}
     
     <!-- Delete overlay -->
     {% if integration.driver_installed %}
-    <div id="delete-overlay-{{ integration.driver_id }}" class="hidden absolute inset-0 bg-uc-darker/90 rounded-xl z-10 pointer-events-none">
+    <div id="delete-overlay-{{ integration.driver_id }}" class="hidden absolute inset-0 bg-gray-200/90 dark:bg-uc-darker/90 rounded-xl z-10 pointer-events-none">
         <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center">
             <svg class="animate-spin h-8 w-8 text-red-400 mb-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 714 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
             </svg>
-            <span class="text-sm text-gray-300">Deleting...</span>
+            <span class="text-sm text-gray-700 dark:text-gray-300">Deleting...</span>
         </div>
     </div>
     {% endif %}
