@@ -911,8 +911,6 @@ class SyncGitHubClient:
         :param version: Specific version tag to download (e.g., 'v1.0.0'). If None, downloads latest.
         :return: Tuple of (file bytes, filename) or None if not found
         """
-        import re
-
         # Get the appropriate release
         if version:
             release = self.get_release_by_tag(owner, repo, version)
@@ -934,7 +932,7 @@ class SyncGitHubClient:
 
         # Find the matching asset
         target_asset = None
-        
+
         if asset_pattern:
             # Use regex pattern matching
             try:

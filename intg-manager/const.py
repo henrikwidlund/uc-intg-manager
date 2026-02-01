@@ -41,7 +41,7 @@ SYSTEM_MESSAGES_FILE = os.path.join(DATA_DIR, "system_messages.json")
 # System messages GitHub URL - remote source for messages
 SYSTEM_MESSAGES_URL = "https://raw.githubusercontent.com/JackJPowell/uc-intg-list/main/system_messages.json"
 
-# Version check interval (in poll cycles, at 60s each = 30 min)
+# Version check interval (in poll cycles, at 30s each = 15 min)
 VERSION_CHECK_INTERVAL_POLLS = 30
 
 # API request delays

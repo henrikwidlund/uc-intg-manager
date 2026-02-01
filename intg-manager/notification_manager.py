@@ -13,6 +13,7 @@ from notification_service import NotificationService
 from notification_settings import NotificationSettings
 
 _LOG = logging.getLogger(__name__)
+CONSECUTIVE_THRESHOLD = 6
 
 
 class NotificationManager:
@@ -29,6 +30,7 @@ class NotificationManager:
         # Track what we've already notified about to avoid spam
         self._notified_updates: set[str] = set()  # {driver_id:version}
         self._notified_errors: dict[str, str] = {}  # {driver_id: error_state}
+        self._consecutive_errors: dict[str, int] = {}  # {driver_id: count}
         self._notified_orphaned_activities: set[str] = set()  # {activity_id}
         # Load persisted notification state from disk
         self._load_notification_state()
@@ -45,6 +47,9 @@ class NotificationManager:
                     )
                     self._notified_errors = notification_state.get(
                         "notified_errors", {}
+                    )
+                    self._consecutive_errors = notification_state.get(
+                        "consecutive_errors", {}
                     )
                     self._notified_orphaned_activities = set(
                         notification_state.get("notified_orphaned_activities", [])
@@ -74,6 +79,7 @@ class NotificationManager:
             existing_data["notification_state"] = {
                 "notified_updates": list(self._notified_updates),
                 "notified_errors": self._notified_errors,
+                "consecutive_errors": self._consecutive_errors,
                 "notified_orphaned_activities": list(
                     self._notified_orphaned_activities
                 ),
@@ -187,6 +193,10 @@ class NotificationManager:
         """
         Notify when an integration enters an error state.
 
+        Uses consecutive failure tracking to avoid false positives during
+        brief disconnections (e.g., during upgrades). Requires 6 consecutive
+        error checks (~180 seconds) before sending notification.
+
         :param driver_id: Driver ID of the integration
         :param integration_name: Name of the integration
         :param state: Current state
@@ -198,6 +208,21 @@ class NotificationManager:
         ):
             return
 
+        # Increment consecutive error counter (but cap at threshold to prevent unbounded growth)
+        current_count = self._consecutive_errors.get(driver_id, 0)
+        if current_count < CONSECUTIVE_THRESHOLD:
+            self._consecutive_errors[driver_id] = current_count + 1
+            _LOG.debug(
+                "Integration %s in error state %s - count %d/%d, not notifying yet",
+                integration_name,
+                state,
+                self._consecutive_errors[driver_id],
+                CONSECUTIVE_THRESHOLD,
+            )
+            self._save_notification_state()
+            return
+        
+        # At this point, current_count >= CONSECUTIVE_THRESHOLD, so we can notify
         # Only notify if this is a new error or the error state changed
         if self._notified_errors.get(driver_id) == state:
             return
@@ -221,10 +246,16 @@ class NotificationManager:
         Clear the error state tracking for an integration.
 
         Call this when an integration recovers from an error state.
+        Also resets the consecutive error counter.
 
         :param driver_id: Driver ID of the integration
         """
+        changed = False
         if self._notified_errors.pop(driver_id, None) is not None:
+            changed = True
+        if self._consecutive_errors.pop(driver_id, None) is not None:
+            changed = True
+        if changed:
             self._save_notification_state()  # Persist to disk
 
     async def notify_orphaned_entities(

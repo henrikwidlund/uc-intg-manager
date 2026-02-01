@@ -263,6 +263,10 @@ class IntegrationManagerDevice(PollingDevice):
             if self._is_docked and self._web_server and self._web_server.is_running:
                 await self._check_scheduled_backup()
 
+            # Check for integration error states (disconnected, error, etc.) - runs every poll
+            if self._web_server and self._web_server.is_running:
+                self._web_server.check_error_states()
+
             # Web server health check - verify server is actually accessible when it should be running
             await self._check_web_server_health()
 
@@ -288,8 +292,6 @@ class IntegrationManagerDevice(PollingDevice):
 
                 # Give the server thread a moment to start and verify it didn't fail
                 # The server sets _running = True immediately, but actual startup happens in background
-                import asyncio
-
                 await asyncio.sleep(0.5)
 
                 if self._web_server.is_running:
@@ -302,9 +304,6 @@ class IntegrationManagerDevice(PollingDevice):
                     try:
                         # Check for version updates
                         # self._web_server.refresh_integration_versions()
-
-                        # Check for error states (disconnected, error, etc.)
-                        self._web_server.check_error_states()
 
                         # Check for new integrations in registry
                         # self._web_server.check_new_integrations()
@@ -366,9 +365,6 @@ class IntegrationManagerDevice(PollingDevice):
             # Trigger the web server to refresh version data
             # This updates the cached update availability info and sends update notifications
             # self._web_server.refresh_integration_versions()
-
-            # Check for error states (disconnected, error, etc.)
-            self._web_server.check_error_states()
 
             # Check for new integrations in registry
             # self._web_server.check_new_integrations()

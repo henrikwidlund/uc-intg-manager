@@ -515,7 +515,6 @@ def _get_installed_integrations() -> list[IntegrationInfo]:
             _LOG.info("Integration %s in problem state: %s", info.name, info.state)
             try:
                 nm = get_notification_manager()
-                _LOG.debug("Sending notification for error state: %s", info.name)
                 send_notification_sync(
                     nm.notify_integration_error_state, driver_id, info.name, info.state
                 )
