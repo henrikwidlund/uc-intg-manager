@@ -1361,19 +1361,33 @@ def _perform_update_integration(
 
         owner, repo = parsed
 
+        # Check if registry has an asset_pattern for this integration
+        registry = load_registry()
+        asset_pattern = next(
+            (
+                item.get("asset_pattern")
+                for item in registry
+                if item.get("driver_id") == integration.driver_id
+                or item.get("id") == integration.driver_id
+            ),
+            None,
+        )
+
         # Download the specified or latest release
         if version:
             _LOG.info(
                 "Updating integration %s to version %s", integration.driver_id, version
             )
             download_result = _github_client.download_release_asset(
-                owner, repo, version=version
+                owner, repo, asset_pattern=asset_pattern, version=version
             )
         else:
             _LOG.info(
                 "Updating integration %s to latest version", integration.driver_id
             )
-            download_result = _github_client.download_release_asset(owner, repo)
+            download_result = _github_client.download_release_asset(
+                owner, repo, asset_pattern=asset_pattern
+            )
         if not download_result:
             with _operation_lock:
                 _operation_in_progress = False
@@ -2314,15 +2328,28 @@ def update_driver(driver_id: str):
 
         owner, repo = parsed
 
+        # Check if registry has an asset_pattern for this integration
+        registry = load_registry()
+        asset_pattern = next(
+            (
+                item.get("asset_pattern")
+                for item in registry
+                if item.get("driver_id") == driver_id or item.get("id") == driver_id
+            ),
+            None,
+        )
+
         # Download the specified or latest release
         if version:
             _LOG.info("Updating driver %s to version %s", driver_id, version)
             download_result = _github_client.download_release_asset(
-                owner, repo, version=version
+                owner, repo, asset_pattern=asset_pattern, version=version
             )
         else:
             _LOG.info("Updating driver %s to latest version", driver_id)
-            download_result = _github_client.download_release_asset(owner, repo)
+            download_result = _github_client.download_release_asset(
+                owner, repo, asset_pattern=asset_pattern
+            )
         if not download_result:
             with _operation_lock:
                 _operation_in_progress = False
@@ -2922,15 +2949,28 @@ def install_integration(driver_id: str):
 
         owner, repo = parsed
 
+        # Check if registry has an asset_pattern for this integration
+        registry = load_registry()
+        asset_pattern = next(
+            (
+                item.get("asset_pattern")
+                for item in registry
+                if item.get("driver_id") == driver_id or item.get("id") == driver_id
+            ),
+            None,
+        )
+
         # Download the specified or latest release
         if version:
             _LOG.info("Installing %s version %s", driver_id, version)
             download_result = _github_client.download_release_asset(
-                owner, repo, version=version
+                owner, repo, asset_pattern=asset_pattern, version=version
             )
         else:
             _LOG.info("Installing latest version of %s", driver_id)
-            download_result = _github_client.download_release_asset(owner, repo)
+            download_result = _github_client.download_release_asset(
+                owner, repo, asset_pattern=asset_pattern
+            )
         if not download_result:
             with _operation_lock:
                 _operation_in_progress = False

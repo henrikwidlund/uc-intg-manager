@@ -898,7 +898,7 @@ class SyncGitHubClient:
         self,
         owner: str,
         repo: str,
-        asset_pattern: str = ".tar.gz",
+        asset_pattern: str | None = None,
         version: str | None = None,
     ) -> tuple[bytes, str] | None:
         """
@@ -906,10 +906,13 @@ class SyncGitHubClient:
 
         :param owner: GitHub repository owner
         :param repo: GitHub repository name
-        :param asset_pattern: Pattern to match asset filename (default .tar.gz)
+        :param asset_pattern: Regex pattern to match asset filename. If None, matches first .tar.gz file.
+                              Use for integrations with multiple tar.gz files (e.g., 'aarch64.*\.tar\.gz')
         :param version: Specific version tag to download (e.g., 'v1.0.0'). If None, downloads latest.
         :return: Tuple of (file bytes, filename) or None if not found
         """
+        import re
+
         # Get the appropriate release
         if version:
             release = self.get_release_by_tag(owner, repo, version)
@@ -929,13 +932,41 @@ class SyncGitHubClient:
             _LOG.warning("No assets in release for %s/%s", owner, repo)
             return None
 
-        # Find the tar.gz asset
+        # Find the matching asset
         target_asset = None
-        for asset in assets:
-            name = asset.get("name", "")
-            if asset_pattern in name:
-                target_asset = asset
-                break
+        
+        if asset_pattern:
+            # Use regex pattern matching
+            try:
+                pattern = re.compile(asset_pattern)
+                for asset in assets:
+                    name = asset.get("name", "")
+                    if pattern.search(name):
+                        target_asset = asset
+                        _LOG.debug(
+                            "Matched asset '%s' using pattern '%s' for %s/%s",
+                            name,
+                            asset_pattern,
+                            owner,
+                            repo,
+                        )
+                        break
+            except re.error as e:
+                _LOG.error(
+                    "Invalid regex pattern '%s' for %s/%s: %s",
+                    asset_pattern,
+                    owner,
+                    repo,
+                    e,
+                )
+                return None
+        else:
+            # Default: find first .tar.gz file
+            for asset in assets:
+                name = asset.get("name", "")
+                if ".tar.gz" in name:
+                    target_asset = asset
+                    break
 
         if not target_asset:
             _LOG.warning(
