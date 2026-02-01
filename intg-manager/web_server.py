@@ -948,7 +948,9 @@ def get_updates_count():
 def get_integrations_list():
     """Get HTML partial with list of installed integrations."""
     if not _remote_client:
-        return "<div class='text-red-500'>Service not initialized</div>"
+        return (
+            "<div class='text-red-600 dark:text-red-400'>Service not initialized</div>"
+        )
 
     try:
         integrations = _get_installed_integrations()
@@ -971,7 +973,7 @@ def get_integrations_list():
         )
     except Exception as e:
         _LOG.error("Failed to get integrations: %s", e)
-        return f"<div class='text-red-500'>Error: {e}</div>"
+        return f"<div class='text-red-600 dark:text-red-400'>Error: {e}</div>"
 
 
 @app.route("/api/integrations/available")
@@ -987,7 +989,7 @@ def get_available_list():
         )
     except Exception as e:
         _LOG.error("Failed to get available integrations: %s", e)
-        return f"<div class='text-red-500'>Error: {e}</div>"
+        return f"<div class='text-red-600 dark:text-red-400'>Error: {e}</div>"
 
 
 @app.route("/api/integrations/refresh-versions", methods=["POST"])
@@ -1009,7 +1011,9 @@ def refresh_versions():
 def get_integration_detail(instance_id: str):
     """Get HTML partial with integration details."""
     if not _remote_client:
-        return "<div class='text-red-500'>Service not initialized</div>"
+        return (
+            "<div class='text-red-600 dark:text-red-400'>Service not initialized</div>"
+        )
 
     try:
         # Find the integration in the list
@@ -1021,10 +1025,10 @@ def get_integration_detail(instance_id: str):
             return render_template(
                 "partials/integration_detail.html", integration=integration
             )
-        return "<div class='text-yellow-500'>Integration not found</div>"
+        return "<div class='text-yellow-700 dark:text-yellow-400'>Integration not found</div>"
     except Exception as e:
         _LOG.error("Failed to get integration detail: %s", e)
-        return f"<div class='text-red-500'>Error: {e}</div>"
+        return f"<div class='text-red-600 dark:text-red-400'>Error: {e}</div>"
 
 
 @app.route("/api/integration/<instance_id>/update", methods=["POST"])
@@ -2547,7 +2551,7 @@ def get_update_confirmation(driver_id: str):
     Returns HTML warning that configuration cannot be preserved.
     """
     if not _remote_client:
-        return "<p class='text-red-400'>Service not initialized</p>"
+        return "<p class='text-red-600 dark:text-red-400'>Service not initialized</p>"
 
     try:
         # Get integration details
@@ -2555,7 +2559,7 @@ def get_update_confirmation(driver_id: str):
         integration = next((i for i in integrations if i.driver_id == driver_id), None)
 
         if not integration:
-            return "<p class='text-red-400'>Integration not found</p>"
+            return "<p class='text-red-600 dark:text-red-400'>Integration not found</p>"
 
         # Load registry to check backup requirements
         registry = load_registry()
@@ -2601,7 +2605,7 @@ def get_update_confirmation(driver_id: str):
         )
     except Exception as e:
         _LOG.error("Error loading update confirmation for %s: %s", driver_id, e)
-        return f"<p class='text-red-400'>Error: {str(e)}</p>"
+        return f"<p class='text-red-600 dark:text-red-400'>Error: {str(e)}</p>"
 
 
 @app.route("/api/integration/<driver_id>/delete-confirm")
@@ -2612,7 +2616,7 @@ def get_delete_confirmation(driver_id: str):
     Returns HTML to be displayed in the modal with delete options.
     """
     if not _remote_client:
-        return "<p class='text-red-400'>Service not initialized</p>"
+        return "<p class='text-red-600 dark:text-red-400'>Service not initialized</p>"
 
     try:
         # Get integration name for display
@@ -2647,7 +2651,7 @@ def get_delete_confirmation(driver_id: str):
         )
     except Exception as e:
         _LOG.error("Error loading delete confirmation for %s: %s", driver_id, e)
-        return f"<p class='text-red-400'>Error: {str(e)}</p>"
+        return f"<p class='text-red-600 dark:text-red-400'>Error: {str(e)}</p>"
 
 
 @app.route("/api/integration/<driver_id>/delete", methods=["DELETE"])
@@ -3503,24 +3507,24 @@ def get_status():
 def get_status_html():
     """Get current system status as HTML badges."""
     if not _remote_client:
-        return '<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-500/20 text-red-300">Not Connected</span>'
+        return '<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-600 dark:bg-red-500/20 text-white dark:text-red-300">Not Connected</span>'
 
     try:
         is_docked = _remote_client.is_docked()
         docked_badge = (
-            '<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-500/20 text-green-300">'
+            '<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-700 dark:bg-green-500/20 text-white dark:text-green-300">'
             '<i class="fa-regular fa-charging-station mr-1.5"></i>Docked</span>'
             if is_docked
-            else '<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-500/20 text-yellow-300">'
+            else '<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-700 dark:bg-yellow-500/20 text-white dark:text-yellow-300">'
             '<i class="fa-regular fa-battery-half mr-1.5"></i>On Battery</span>'
         )
         server_badge = (
-            '<span class="hidden sm:inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-500/20 text-green-300">'
-            '<span class="w-1.5 h-1.5 mr-1.5 bg-green-400 rounded-full animate-pulse"></span>Running</span>'
+            '<span class="hidden sm:inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-700 dark:bg-green-500/20 text-white dark:text-green-300">'
+            '<span class="w-1.5 h-1.5 mr-1.5 bg-white dark:bg-green-400 rounded-full animate-pulse"></span>Running</span>'
         )
         return f"{docked_badge} {server_badge}"
     except Exception as e:
-        return f'<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-500/20 text-red-300">Error: {e}</span>'
+        return f'<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-600 dark:bg-red-500/20 text-white dark:text-red-300">Error: {e}</span>'
 
 
 # =============================================================================
@@ -4297,12 +4301,12 @@ def get_orphaned_entities():
         _LOG.error("Failed to fetch orphaned entities: %s", e)
         # Return error message
         return f"""
-        <div class="bg-red-900/20 border border-red-500/30 rounded-lg p-6">
+        <div class="bg-red-50 dark:bg-red-900/20 border border-red-400 dark:border-red-500/30 rounded-lg p-6">
             <div class="flex items-start gap-3">
-                <i class="fa-solid fa-triangle-exclamation text-red-400 text-xl"></i>
+                <i class="fa-solid fa-triangle-exclamation text-red-600 dark:text-red-400 text-xl"></i>
                 <div>
-                    <h3 class="text-white font-medium mb-1">Error Loading Diagnostics</h3>
-                    <p class="text-sm text-gray-300">{e}</p>
+                    <h3 class="text-gray-900 dark:text-white font-medium mb-1">Error Loading Diagnostics</h3>
+                    <p class="text-sm text-gray-700 dark:text-gray-300">{e}</p>
                 </div>
             </div>
         </div>
@@ -4329,12 +4333,12 @@ def get_orphaned_ir_codesets():
     except SyncAPIError as e:
         _LOG.error("Failed to fetch orphaned IR codesets: %s", e)
         return f"""
-        <div class="bg-red-900/20 border border-red-500/30 rounded-lg p-6">
+        <div class="bg-red-50 dark:bg-red-900/20 border border-red-400 dark:border-red-500/30 rounded-lg p-6">
             <div class="flex items-start gap-3">
-                <i class="fa-solid fa-triangle-exclamation text-red-400 text-xl"></i>
+                <i class="fa-solid fa-triangle-exclamation text-red-600 dark:text-red-400 text-xl"></i>
                 <div>
-                    <h3 class="text-white font-medium mb-1">Error Loading IR Codesets</h3>
-                    <p class="text-sm text-gray-300">{e}</p>
+                    <h3 class="text-gray-900 dark:text-white font-medium mb-1">Error Loading IR Codesets</h3>
+                    <p class="text-sm text-gray-700 dark:text-gray-300">{e}</p>
                 </div>
             </div>
         </div>
@@ -4382,7 +4386,7 @@ def reassociate_ir_codeset():
             data = request.get_json()
         else:
             data = request.form.to_dict()
-            
+
         device_id = data.get("device_id")
         remote_name = data.get("remote_name")
 
@@ -4433,7 +4437,7 @@ def create_backup_now():
     """Create a backup of all integration configs that support backup."""
     try:
         if not _remote_client:
-            return """<div class="text-red-400">Not connected to remote</div>"""
+            return """<div class="text-red-600 dark:text-red-400">Not connected to remote</div>"""
 
         # Load registry to check which integrations support backup
         registry = load_registry()
@@ -4482,25 +4486,25 @@ def create_backup_now():
         result_parts = []
         if backed_up:
             result_parts.append(
-                f"<span class='text-green-400'>✓ Backed up: {', '.join(backed_up)}</span>"
+                f"<span class='text-green-600 dark:text-green-400'>✓ Backed up: {', '.join(backed_up)}</span>"
             )
         if skipped:
             result_parts.append(
-                f"<span class='text-gray-400'>Skipped (integration does not support backup): {len(skipped)}</span>"
+                f"<span class='text-gray-600 dark:text-gray-400'>Skipped (integration does not support backup): {len(skipped)}</span>"
             )
         if failed:
             result_parts.append(
-                f"<span class='text-red-400'>✗ Failed: {', '.join(failed)}</span>"
+                f"<span class='text-red-600 dark:text-red-400'>✗ Failed: {', '.join(failed)}</span>"
             )
 
         if not result_parts:
-            return """<div class="text-gray-400">No integrations to backup</div>"""
+            return """<div class="text-gray-600 dark:text-gray-400">No integrations to backup</div>"""
 
         return f"""<div class="space-y-1">{"<br>".join(result_parts)}</div>"""
 
     except Exception as e:
         _LOG.error("Failed to create backup: %s", e)
-        return f"""<div class="text-red-400">Error creating backup: {e}</div>"""
+        return f"""<div class="text-red-600 dark:text-red-400">Error creating backup: {e}</div>"""
 
 
 @app.route("/api/backups/list")
@@ -4511,7 +4515,9 @@ def list_backups():
         backups = backups_data.get("integrations", {})
 
         if not backups:
-            return "<div class='text-gray-400'>No backups found</div>"
+            return (
+                "<div class='text-gray-600 dark:text-gray-400'>No backups found</div>"
+            )
 
         html = "<div class='space-y-2'>"
         for driver_id, backup_info in backups.items():
@@ -4524,16 +4530,16 @@ def list_backups():
                 formatted_time = timestamp
 
             html += f"""
-            <div class="flex items-center justify-between p-3 bg-gray-700/50 rounded-lg hover:bg-gray-700">
+            <div class="flex items-center justify-between p-3 bg-uc-light-card dark:bg-gray-700/50 rounded-lg border border-uc-light-border dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-700">
                 <button class="flex-1 text-left"
                         hx-get="/api/backups/{driver_id}/view"
                         hx-target="#backup-content"
                         hx-swap="innerHTML"
                         title="View backup data">
-                    <div class="text-white font-mono text-sm">{driver_id}</div>
-                    <div class="text-xs text-gray-400">{formatted_time}</div>
+                    <div class="text-gray-900 dark:text-white font-mono text-sm">{driver_id}</div>
+                    <div class="text-xs text-gray-600 dark:text-gray-400">{formatted_time}</div>
                 </button>
-                <button class="text-red-400 hover:text-red-300 text-sm ml-3"
+                <button class="text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 text-sm ml-3"
                         hx-get="/api/backups/{driver_id}/delete-confirm"
                         hx-target="#modal-content"
                         hx-swap="innerHTML"
@@ -4547,7 +4553,7 @@ def list_backups():
 
     except Exception as e:
         _LOG.error("Failed to list backups: %s", e)
-        return f"<div class='text-red-400'>Error: {e}</div>"
+        return f"<div class='text-red-600 dark:text-red-400'>Error: {e}</div>"
 
 
 @app.route("/api/backups/<driver_id>/delete-confirm")
@@ -4586,7 +4592,7 @@ def view_backup(driver_id: str):
         backup_data = get_backup(driver_id)
 
         if not backup_data:
-            return "<div class='text-gray-400'>No backup data found</div>"
+            return "<div class='text-gray-600 dark:text-gray-400'>No backup data found</div>"
 
         # Pretty-print JSON data
         try:
@@ -4596,20 +4602,20 @@ def view_backup(driver_id: str):
             formatted_data = backup_data
 
         return f"""
-        <div class="mt-4 p-4 bg-gray-900 rounded-lg">
+        <div class="mt-4 p-4 bg-uc-light-card dark:bg-gray-900 rounded-lg border border-uc-light-border dark:border-gray-700">
             <div class="flex items-center justify-between mb-3">
-                <h4 class="text-sm font-medium text-white">Backup Data for {driver_id}</h4>
-                <button class="text-gray-400 hover:text-white text-sm"
+                <h4 class="text-sm font-medium text-gray-900 dark:text-white">Backup Data for {driver_id}</h4>
+                <button class="text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white text-sm"
                         onclick="this.parentElement.parentElement.style.display='none'">
                     ✕ Close
                 </button>
             </div>
-            <pre class="text-xs text-gray-300 overflow-auto max-h-96 whitespace-pre-wrap"><code>{formatted_data}</code></pre>
+            <pre class="text-xs text-gray-900 dark:text-gray-300 overflow-auto max-h-96 whitespace-pre-wrap"><code>{formatted_data}</code></pre>
         </div>
         """
     except Exception as e:
         _LOG.error("Failed to view backup: %s", e)
-        return f"<div class='text-red-400'>Error: {e}</div>"
+        return f"<div class='text-red-600 dark:text-red-400'>Error: {e}</div>"
 
 
 @app.route("/api/backups/<driver_id>", methods=["DELETE"])
@@ -4620,7 +4626,7 @@ def delete_backup_entry(driver_id: str):
         return list_backups()  # Return updated list
     except Exception as e:
         _LOG.error("Failed to delete backup: %s", e)
-        return f"<div class='text-red-400'>Error: {e}</div>"
+        return f"<div class='text-red-600 dark:text-red-400'>Error: {e}</div>"
 
 
 @app.route("/api/backups/download")

@@ -5,8 +5,8 @@
 {% block content %}
 <div class="container mx-auto px-4 sm:px-6 py-6 sm:py-8 max-w-6xl">
     <div class="mb-6 sm:mb-8">
-        <h1 class="text-2xl sm:text-3xl font-bold text-white mb-2">Notification Settings</h1>
-        <p class="text-gray-400">Configure how you want to be notified about integration updates, errors, and events.</p>
+        <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white mb-2">Notification Settings</h1>
+        <p class="text-gray-600 dark:text-gray-400">Configure how you want to be notified about integration updates, errors, and events.</p>
     </div>
 
     <!-- Success/Error Messages - Fixed at top -->
@@ -16,15 +16,15 @@
     <div class="space-y-6">
         
         <!-- Home Assistant Card -->
-        <div class="bg-uc-card rounded-xl p-6 border border-uc-border">
+        <div class="bg-uc-light-card dark:bg-uc-card rounded-xl p-6 border border-uc-light-border dark:border-uc-border">
             <div class="flex items-start justify-between mb-4">
                 <div class="flex items-center gap-3">
                     <div class="w-12 h-12 bg-blue-500/20 rounded-lg flex items-center justify-center">
                         <i class="fa-solid fa-house-signal text-blue-400 text-xl"></i>
                     </div>
                     <div>
-                        <h2 class="text-lg font-semibold text-white">Home Assistant</h2>
-                        <p class="text-sm text-gray-400">Send notifications to Home Assistant</p>
+                        <h2 class="text-lg font-semibold text-gray-900 dark:text-white">Home Assistant</h2>
+                        <p class="text-sm text-gray-600 dark:text-gray-400">Send notifications to Home Assistant</p>
                     </div>
                 </div>
                 <label class="relative inline-flex items-center cursor-pointer">
@@ -35,25 +35,25 @@
             
             <form id="ha-form" class="space-y-4">
                 <div>
-                    <label for="ha-url" class="block text-sm font-medium text-gray-300 mb-2">
+                    <label for="ha-url" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                         Home Assistant URL
                     </label>
                     <input type="url" id="ha-url" name="url" 
                            value="{{ notification_settings.home_assistant.url if notification_settings and notification_settings.home_assistant else '' }}"
-                           class="w-full px-4 py-2 bg-uc-darker border border-uc-border rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                           class="w-full px-4 py-2 bg-white dark:bg-uc-darker border border-gray-300 dark:border-uc-border rounded-lg text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
                            placeholder="http://homeassistant.local:8123">
-                    <p class="mt-1 text-xs text-gray-500">The URL of your Home Assistant instance</p>
+                    <p class="mt-1 text-xs text-gray-600 dark:text-gray-500">The URL of your Home Assistant instance</p>
                 </div>
                 
                 <div>
-                    <label for="ha-token" class="block text-sm font-medium text-gray-300 mb-2">
+                    <label for="ha-token" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                         Long-Lived Access Token
                     </label>
                     <input type="password" id="ha-token" name="token"
                            value="{{ notification_settings.home_assistant.token if notification_settings and notification_settings.home_assistant else '' }}"
-                           class="w-full px-4 py-2 bg-uc-darker border border-uc-border rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                           class="w-full px-4 py-2 bg-white dark:bg-uc-darker border border-gray-300 dark:border-uc-border rounded-lg text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
                            placeholder="eyJ0eXAiOiJKV1QiLCJhbGc...">
-                    <p class="mt-1 text-xs text-gray-500">Create a token in Home Assistant: Profile → Security → Long-Lived Access Tokens</p>
+                    <p class="mt-1 text-xs text-gray-600 dark:text-gray-500">Create a token in Home Assistant: Profile → Security → Long-Lived Access Tokens</p>
                 </div>
                 
                 <div class="flex items-center gap-3">
@@ -62,7 +62,7 @@
                         <i class="fa-solid fa-save mr-2"></i>Save
                     </button>
                     <button type="button" id="ha-test"
-                            class="px-4 py-2 bg-uc-darker hover:bg-uc-card text-gray-300 hover:text-white text-sm font-medium rounded-lg transition-colors border border-uc-border">
+                            class="px-4 py-2 bg-gray-200 dark:bg-uc-darker hover:bg-gray-300 dark:hover:bg-uc-card text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white text-sm font-medium rounded-lg transition-colors border border-gray-300 dark:border-uc-border">
                         <i class="fa-solid fa-paper-plane mr-2"></i>Send Test
                     </button>
                 </div>
@@ -70,15 +70,15 @@
         </div>
 
         <!-- Webhook Card -->
-        <div class="bg-uc-card rounded-xl p-6 border border-uc-border">
+        <div class="bg-uc-light-card dark:bg-uc-card rounded-xl p-6 border border-uc-light-border dark:border-uc-border">
             <div class="flex items-start justify-between mb-4">
                 <div class="flex items-center gap-3">
                     <div class="w-12 h-12 bg-green-500/20 rounded-lg flex items-center justify-center">
                         <i class="fa-solid fa-arrow-up-right-from-square text-green-400 text-xl"></i>
                     </div>
                     <div>
-                        <h2 class="text-lg font-semibold text-white">Webhook</h2>
-                        <p class="text-sm text-gray-400">Send HTTP POST requests to a custom endpoint</p>
+                        <h2 class="text-lg font-semibold text-gray-900 dark:text-white">Webhook</h2>
+                        <p class="text-sm text-gray-600 dark:text-gray-400">Send HTTP POST requests to a custom endpoint</p>
                     </div>
                 </div>
                 <label class="relative inline-flex items-center cursor-pointer">
@@ -89,24 +89,24 @@
             
             <form id="webhook-form" class="space-y-4">
                 <div>
-                    <label for="webhook-url" class="block text-sm font-medium text-gray-300 mb-2">
+                    <label for="webhook-url" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                         Webhook URL
                     </label>
                     <input type="url" id="webhook-url" name="url"
                            value="{{ notification_settings.webhook.url if notification_settings and notification_settings.webhook else '' }}"
-                           class="w-full px-4 py-2 bg-uc-darker border border-uc-border rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-green-500"
+                           class="w-full px-4 py-2 bg-white dark:bg-uc-darker border border-gray-300 dark:border-uc-border rounded-lg text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-green-500"
                            placeholder="https://example.com/webhook">
-                    <p class="mt-1 text-xs text-gray-500">The endpoint that will receive POST requests with notification data</p>
+                    <p class="mt-1 text-xs text-gray-600 dark:text-gray-500">The endpoint that will receive POST requests with notification data</p>
                 </div>
                 
                 <div>
-                    <label for="webhook-headers" class="block text-sm font-medium text-gray-300 mb-2">
+                    <label for="webhook-headers" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                         Custom Headers (Optional)
                     </label>
                     <textarea id="webhook-headers" name="headers" rows="3"
-                              class="w-full px-4 py-2 bg-uc-darker border border-uc-border rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-green-500 font-mono text-sm"
+                              class="w-full px-4 py-2 bg-white dark:bg-uc-darker border border-gray-300 dark:border-uc-border rounded-lg text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-green-500 font-mono text-sm"
                               placeholder='{"Authorization": "Bearer token", "X-Custom-Header": "value"}'>{{ notification_settings.webhook.headers | tojson if notification_settings and notification_settings.webhook and notification_settings.webhook.headers else '' }}</textarea>
-                    <p class="mt-1 text-xs text-gray-500">JSON object with custom HTTP headers</p>
+                    <p class="mt-1 text-xs text-gray-600 dark:text-gray-500">JSON object with custom HTTP headers</p>
                 </div>
                 
                 <div class="flex items-center gap-3">
@@ -115,7 +115,7 @@
                         <i class="fa-solid fa-save mr-2"></i>Save
                     </button>
                     <button type="button" id="webhook-test"
-                            class="px-4 py-2 bg-uc-darker hover:bg-uc-card text-gray-300 hover:text-white text-sm font-medium rounded-lg transition-colors border border-uc-border">
+                            class="px-4 py-2 bg-gray-200 dark:bg-uc-darker hover:bg-gray-300 dark:hover:bg-uc-card text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white text-sm font-medium rounded-lg transition-colors border border-gray-300 dark:border-uc-border">
                         <i class="fa-solid fa-paper-plane mr-2"></i>Send Test
                     </button>
                 </div>
@@ -123,15 +123,15 @@
         </div>
 
         <!-- Discord Card -->
-        <div class="bg-uc-card rounded-xl p-6 border border-uc-border">
+        <div class="bg-uc-light-card dark:bg-uc-card rounded-xl p-6 border border-uc-light-border dark:border-uc-border">
             <div class="flex items-start justify-between mb-4">
                 <div class="flex items-center gap-3">
                     <div class="w-12 h-12 bg-indigo-500/20 rounded-lg flex items-center justify-center">
                         <i class="fa-brands fa-discord text-indigo-400 text-xl"></i>
                     </div>
                     <div>
-                        <h2 class="text-lg font-semibold text-white">Discord</h2>
-                        <p class="text-sm text-gray-400">Send notifications to Discord channels via webhooks</p>
+                        <h2 class="text-lg font-semibold text-gray-900 dark:text-white">Discord</h2>
+                        <p class="text-sm text-gray-600 dark:text-gray-400">Send notifications to Discord channels via webhooks</p>
                     </div>
                 </div>
                 <label class="relative inline-flex items-center cursor-pointer">
@@ -142,14 +142,14 @@
             
             <form id="discord-form" class="space-y-4">
                 <div>
-                    <label for="discord-webhook-url" class="block text-sm font-medium text-gray-300 mb-2">
+                    <label for="discord-webhook-url" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                         Webhook URL
                     </label>
                     <input type="url" id="discord-webhook-url" name="webhook_url"
                            value="{{ notification_settings.discord.webhook_url if notification_settings and notification_settings.discord else '' }}"
-                           class="w-full px-4 py-2 bg-uc-darker border border-uc-border rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono text-sm"
+                           class="w-full px-4 py-2 bg-white dark:bg-uc-darker border border-gray-300 dark:border-uc-border rounded-lg text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono text-sm"
                            placeholder="https://discord.com/api/webhooks/123456789/abcdef...">
-                    <p class="mt-1 text-xs text-gray-500">Create a webhook in Discord: Server Settings → Integrations → Webhooks</p>
+                    <p class="mt-1 text-xs text-gray-600 dark:text-gray-500">Create a webhook in Discord: Server Settings → Integrations → Webhooks</p>
                 </div>
                 
                 <div class="flex items-center gap-3">
@@ -158,7 +158,7 @@
                         <i class="fa-solid fa-save mr-2"></i>Save
                     </button>
                     <button type="button" id="discord-test"
-                            class="px-4 py-2 bg-uc-darker hover:bg-uc-card text-gray-300 hover:text-white text-sm font-medium rounded-lg transition-colors border border-uc-border">
+                            class="px-4 py-2 bg-gray-200 dark:bg-uc-darker hover:bg-gray-300 dark:hover:bg-uc-card text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white text-sm font-medium rounded-lg transition-colors border border-gray-300 dark:border-uc-border">
                         <i class="fa-solid fa-paper-plane mr-2"></i>Send Test
                     </button>
                 </div>
@@ -167,15 +167,15 @@
         <!-- End Discord Card -->
 
         <!-- ntfy Card -->
-        <div class="bg-uc-card rounded-xl p-6 border border-uc-border">
+        <div class="bg-uc-light-card dark:bg-uc-card rounded-xl p-6 border border-uc-light-border dark:border-uc-border">
             <div class="flex items-start justify-between mb-4">
                 <div class="flex items-center gap-3">
                     <div class="w-12 h-12 bg-purple-500/20 rounded-lg flex items-center justify-center">
                         <i class="fa-regular fa-message text-purple-400 text-xl"></i>
                     </div>
                     <div>
-                        <h2 class="text-lg font-semibold text-white">ntfy</h2>
-                        <p class="text-sm text-gray-400">Self-hosted or cloud push notifications</p>
+                        <h2 class="text-lg font-semibold text-gray-900 dark:text-white">ntfy</h2>
+                        <p class="text-sm text-gray-600 dark:text-gray-400">Self-hosted or cloud push notifications</p>
                     </div>
                 </div>
                 <label class="relative inline-flex items-center cursor-pointer">
@@ -186,36 +186,36 @@
             
             <form id="ntfy-form" class="space-y-4">
                 <div>
-                    <label for="ntfy-server" class="block text-sm font-medium text-gray-300 mb-2">
+                    <label for="ntfy-server" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                         Server URL
                     </label>
                     <input type="url" id="ntfy-server" name="server"
                            value="{{ notification_settings.ntfy.server if notification_settings and notification_settings.ntfy else 'https://ntfy.sh' }}"
-                           class="w-full px-4 py-2 bg-uc-darker border border-uc-border rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                           class="w-full px-4 py-2 bg-white dark:bg-uc-darker border border-gray-300 dark:border-uc-border rounded-lg text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
                            placeholder="https://ntfy.sh">
-                    <p class="mt-1 text-xs text-gray-500">Use https://ntfy.sh or your self-hosted ntfy server</p>
+                    <p class="mt-1 text-xs text-gray-600 dark:text-gray-500">Use https://ntfy.sh or your self-hosted ntfy server</p>
                 </div>
                 
                 <div>
-                    <label for="ntfy-topic" class="block text-sm font-medium text-gray-300 mb-2">
+                    <label for="ntfy-topic" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                         Topic
                     </label>
                     <input type="text" id="ntfy-topic" name="topic"
                            value="{{ notification_settings.ntfy.topic if notification_settings and notification_settings.ntfy else '' }}"
-                           class="w-full px-4 py-2 bg-uc-darker border border-uc-border rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                           class="w-full px-4 py-2 bg-white dark:bg-uc-darker border border-gray-300 dark:border-uc-border rounded-lg text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
                            placeholder="uc-intg-manager-notifications">
-                    <p class="mt-1 text-xs text-gray-500">The topic to publish notifications to (subscribe to this in the ntfy app)</p>
+                    <p class="mt-1 text-xs text-gray-600 dark:text-gray-500">The topic to publish notifications to (subscribe to this in the ntfy app)</p>
                 </div>
                 
                 <div>
-                    <label for="ntfy-token" class="block text-sm font-medium text-gray-300 mb-2">
+                    <label for="ntfy-token" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                         Access Token (Optional)
                     </label>
                     <input type="password" id="ntfy-token" name="token"
                            value="{{ notification_settings.ntfy.token if notification_settings and notification_settings.ntfy else '' }}"
-                           class="w-full px-4 py-2 bg-uc-darker border border-uc-border rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                           class="w-full px-4 py-2 bg-white dark:bg-uc-darker border border-gray-300 dark:border-uc-border rounded-lg text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
                            placeholder="tk_AgQdq7mVBoFD37zQVN29RhuMzNIz2">
-                    <p class="mt-1 text-xs text-gray-500">Required if your topic is protected (recommended for public servers)</p>
+                    <p class="mt-1 text-xs text-gray-600 dark:text-gray-500">Required if your topic is protected (recommended for public servers)</p>
                 </div>
                 
                 <div class="flex items-center gap-3">
@@ -224,7 +224,7 @@
                         <i class="fa-solid fa-save mr-2"></i>Save
                     </button>
                     <button type="button" id="ntfy-test"
-                            class="px-4 py-2 bg-uc-darker hover:bg-uc-card text-gray-300 hover:text-white text-sm font-medium rounded-lg transition-colors border border-uc-border">
+                            class="px-4 py-2 bg-gray-200 dark:bg-uc-darker hover:bg-gray-300 dark:hover:bg-uc-card text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white text-sm font-medium rounded-lg transition-colors border border-gray-300 dark:border-uc-border">
                         <i class="fa-solid fa-paper-plane mr-2"></i>Send Test
                     </button>
                 </div>
@@ -233,15 +233,15 @@
         <!-- End ntfy Card -->
 
         <!-- Pushover Card -->
-        <div class="bg-uc-card rounded-xl p-6 border border-uc-border">
+        <div class="bg-uc-light-card dark:bg-uc-card rounded-xl p-6 border border-uc-light-border dark:border-uc-border">
             <div class="flex items-start justify-between mb-4">
                 <div class="flex items-center gap-3">
                     <div class="w-12 h-12 bg-orange-500/20 rounded-lg flex items-center justify-center">
                         <i class="fa-solid fa-mobile-vibrate text-orange-400 text-xl"></i>
                     </div>
                     <div>
-                        <h2 class="text-lg font-semibold text-white">Pushover</h2>
-                        <p class="text-sm text-gray-400">Send push notifications to your mobile devices</p>
+                        <h2 class="text-lg font-semibold text-gray-900 dark:text-white">Pushover</h2>
+                        <p class="text-sm text-gray-600 dark:text-gray-400">Send push notifications to your mobile devices</p>
                     </div>
                 </div>
                 <label class="relative inline-flex items-center cursor-pointer">
@@ -252,25 +252,25 @@
             
             <form id="pushover-form" class="space-y-4">
                 <div>
-                    <label for="pushover-user-key" class="block text-sm font-medium text-gray-300 mb-2">
+                    <label for="pushover-user-key" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                         User Key
                     </label>
                     <input type="text" id="pushover-user-key" name="user_key"
                            value="{{ notification_settings.pushover.user_key if notification_settings and notification_settings.pushover else '' }}"
-                           class="w-full px-4 py-2 bg-uc-darker border border-uc-border rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500 font-mono"
+                           class="w-full px-4 py-2 bg-white dark:bg-uc-darker border border-gray-300 dark:border-uc-border rounded-lg text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500 font-mono"
                            placeholder="azGDORePK8gMaC0QOYAMyEEuzJnyUi">
-                    <p class="mt-1 text-xs text-gray-500">Your Pushover user key (found on the Pushover dashboard)</p>
+                    <p class="mt-1 text-xs text-gray-600 dark:text-gray-500">Your Pushover user key (found on the Pushover dashboard)</p>
                 </div>
                 
                 <div>
-                    <label for="pushover-app-token" class="block text-sm font-medium text-gray-300 mb-2">
+                    <label for="pushover-app-token" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                         API Token
                     </label>
                     <input type="text" id="pushover-app-token" name="app_token"
                            value="{{ notification_settings.pushover.app_token if notification_settings and notification_settings.pushover else '' }}"
-                           class="w-full px-4 py-2 bg-uc-darker border border-uc-border rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500 font-mono"
+                           class="w-full px-4 py-2 bg-white dark:bg-uc-darker border border-gray-300 dark:border-uc-border rounded-lg text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500 font-mono"
                            placeholder="a3k42pusyp1p4y48n4vkaxaur1qn62">
-                    <p class="mt-1 text-xs text-gray-500">Create an application at <a href="https://pushover.net/apps/build" target="_blank" class="text-orange-400 hover:text-orange-300">pushover.net/apps/build</a></p>
+                    <p class="mt-1 text-xs text-gray-600 dark:text-gray-500">Create an application at <a href="https://pushover.net/apps/build" target="_blank" class="text-orange-600 dark:text-orange-400 hover:text-orange-700 dark:hover:text-orange-300">pushover.net/apps/build</a></p>
                 </div>
                 
                 <div class="flex items-center gap-3">
@@ -279,7 +279,7 @@
                         <i class="fa-solid fa-save mr-2"></i>Save
                     </button>
                     <button type="button" id="pushover-test"
-                            class="px-4 py-2 bg-uc-darker hover:bg-uc-card text-gray-300 hover:text-white text-sm font-medium rounded-lg transition-colors border border-uc-border">
+                            class="px-4 py-2 bg-gray-200 dark:bg-uc-darker hover:bg-gray-300 dark:hover:bg-uc-card text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white text-sm font-medium rounded-lg transition-colors border border-gray-300 dark:border-uc-border">
                         <i class="fa-solid fa-paper-plane mr-2"></i>Send Test
                     </button>
                 </div>
@@ -287,55 +287,55 @@
         </div>
         
         <!-- Notification Triggers Card -->
-        <div class="bg-uc-card rounded-xl p-6 border border-uc-border">
+        <div class="bg-uc-light-card dark:bg-uc-card rounded-xl p-6 border border-uc-light-border dark:border-uc-border">
             <div class="flex items-start justify-between mb-4">
                 <div class="flex items-center gap-3">
                     <div class="w-12 h-12 bg-purple-500/20 rounded-lg flex items-center justify-center">
                         <i class="fa-solid fa-sliders text-purple-400 text-xl"></i>
                     </div>
                     <div>
-                        <h2 class="text-lg font-semibold text-white">Notification Triggers</h2>
-                        <p class="text-sm text-gray-400">Choose which events should send notifications</p>
+                        <h2 class="text-lg font-semibold text-gray-900 dark:text-white">Notification Triggers</h2>
+                        <p class="text-sm text-gray-600 dark:text-gray-400">Choose which events should send notifications</p>
                     </div>
                 </div>
             </div>
             
             <form id="triggers-form" class="space-y-4">
                 <div class="space-y-3">
-                    <label class="flex items-center justify-between cursor-pointer group p-3 rounded-lg hover:bg-uc-darker/50 transition-colors">
+                    <label class="flex items-center justify-between cursor-pointer group p-3 rounded-lg hover:bg-gray-100 dark:hover:bg-uc-darker/50 transition-colors">
                         <div>
-                            <div class="text-sm font-medium text-gray-200 group-hover:text-white">Integration update available</div>
-                            <div class="text-xs text-gray-500 mt-0.5">Notify when an update is available for installed integrations</div>
+                            <div class="text-sm font-medium text-gray-800 dark:text-gray-200 group-hover:text-gray-900 dark:group-hover:text-white">Integration update available</div>
+                            <div class="text-xs text-gray-600 dark:text-gray-500 mt-0.5">Notify when an update is available for installed integrations</div>
                         </div>
-                        <input type="checkbox" name="integration_update_available" class="w-4 h-4 text-blue-600 bg-uc-darker border-uc-border rounded focus:ring-2 focus:ring-blue-500" {% if notification_settings.triggers.integration_update_available %}checked{% endif %}>
+                        <input type="checkbox" name="integration_update_available" class="w-4 h-4 text-blue-600 bg-white dark:bg-uc-darker border-gray-300 dark:border-uc-border rounded focus:ring-2 focus:ring-blue-500" {% if notification_settings.triggers.integration_update_available %}checked{% endif %}>
                     </label>
                     
-                    <label class="flex items-center justify-between cursor-pointer group p-3 rounded-lg hover:bg-uc-darker/50 transition-colors">
+                    <label class="flex items-center justify-between cursor-pointer group p-3 rounded-lg hover:bg-gray-100 dark:hover:bg-uc-darker/50 transition-colors">
                         <div>
-                            <div class="text-sm font-medium text-gray-200 group-hover:text-white">New integration in registry</div>
-                            <div class="text-xs text-gray-500 mt-0.5">Notify when new integrations are added to the registry</div>
+                            <div class="text-sm font-medium text-gray-800 dark:text-gray-200 group-hover:text-gray-900 dark:group-hover:text-white">New integration in registry</div>
+                            <div class="text-xs text-gray-600 dark:text-gray-500 mt-0.5">Notify when new integrations are added to the registry</div>
                         </div>
-                        <input type="checkbox" name="new_integration_in_registry" class="w-4 h-4 text-blue-600 bg-uc-darker border-uc-border rounded focus:ring-2 focus:ring-blue-500" {% if notification_settings.triggers.new_integration_in_registry %}checked{% endif %}>
+                        <input type="checkbox" name="new_integration_in_registry" class="w-4 h-4 text-blue-600 bg-white dark:bg-uc-darker border-gray-300 dark:border-uc-border rounded focus:ring-2 focus:ring-blue-500" {% if notification_settings.triggers.new_integration_in_registry %}checked{% endif %}>
                     </label>
                     
-                    <label class="flex items-center justify-between cursor-pointer group p-3 rounded-lg hover:bg-uc-darker/50 transition-colors">
+                    <label class="flex items-center justify-between cursor-pointer group p-3 rounded-lg hover:bg-gray-100 dark:hover:bg-uc-darker/50 transition-colors">
                         <div>
-                            <div class="text-sm font-medium text-gray-200 group-hover:text-white">Integration error state</div>
-                            <div class="text-xs text-gray-500 mt-0.5">Notify when an integration enters an error state</div>
+                            <div class="text-sm font-medium text-gray-800 dark:text-gray-200 group-hover:text-gray-900 dark:group-hover:text-white">Integration error state</div>
+                            <div class="text-xs text-gray-600 dark:text-gray-500 mt-0.5">Notify when an integration enters an error state</div>
                         </div>
-                        <input type="checkbox" name="integration_error_state" class="w-4 h-4 text-blue-600 bg-uc-darker border-uc-border rounded focus:ring-2 focus:ring-blue-500" {% if notification_settings.triggers.integration_error_state %}checked{% endif %}>
+                        <input type="checkbox" name="integration_error_state" class="w-4 h-4 text-blue-600 bg-white dark:bg-uc-darker border-gray-300 dark:border-uc-border rounded focus:ring-2 focus:ring-blue-500" {% if notification_settings.triggers.integration_error_state %}checked{% endif %}>
                     </label>
                     
-                    <label class="flex items-center justify-between cursor-pointer group p-3 rounded-lg hover:bg-uc-darker/50 transition-colors">
+                    <label class="flex items-center justify-between cursor-pointer group p-3 rounded-lg hover:bg-gray-100 dark:hover:bg-uc-darker/50 transition-colors">
                         <div>
-                            <div class="text-sm font-medium text-gray-200 group-hover:text-white">Orphaned entities detected</div>
-                            <div class="text-xs text-gray-500 mt-0.5">Notify when orphaned entities are found in activities</div>
+                            <div class="text-sm font-medium text-gray-800 dark:text-gray-200 group-hover:text-gray-900 dark:group-hover:text-white">Orphaned entities detected</div>
+                            <div class="text-xs text-gray-600 dark:text-gray-500 mt-0.5">Notify when orphaned entities are found in activities</div>
                         </div>
-                        <input type="checkbox" name="orphaned_entities_detected" class="w-4 h-4 text-blue-600 bg-uc-darker border-uc-border rounded focus:ring-2 focus:ring-blue-500" {% if notification_settings.triggers.orphaned_entities_detected %}checked{% endif %}>
+                        <input type="checkbox" name="orphaned_entities_detected" class="w-4 h-4 text-blue-600 bg-white dark:bg-uc-darker border-gray-300 dark:border-uc-border rounded focus:ring-2 focus:ring-blue-500" {% if notification_settings.triggers.orphaned_entities_detected %}checked{% endif %}>
                     </label>
                 </div>
 
-                <div class="flex justify-end pt-4 border-t border-uc-border">
+                <div class="flex justify-end pt-4 border-t border-gray-300 dark:border-uc-border">
                     <button type="submit" class="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors">
                         Save Preferences
                     </button>

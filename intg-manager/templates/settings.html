@@ -4,25 +4,73 @@
 
 {% block content %}
 <div class="mb-6 sm:mb-8">
-    <h1 class="text-2xl sm:text-3xl font-bold text-white mb-2">Settings</h1>
-    <p class="text-sm sm:text-base text-gray-400">Configure your Integration Manager preferences</p>
+    <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white mb-2">Settings</h1>
+    <p class="text-sm sm:text-base text-gray-600 dark:text-gray-400">Configure your Integration Manager preferences</p>
+</div>
+
+<!-- Display Settings (localStorage only) -->
+<div class="bg-uc-light-card dark:bg-gray-800 rounded-lg p-4 sm:p-6 mb-4 sm:mb-6 border border-uc-light-border dark:border-transparent">
+    <h2 class="text-lg sm:text-xl font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
+        <i class="fa-solid fa-palette w-5 h-5"></i>
+        Display
+    </h2>
+    
+    <div class="space-y-4">
+        <div>
+            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">Theme</label>
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <button type="button" onclick="setTheme('system')" id="theme-system"
+                    class="theme-option px-4 py-3 bg-gray-100 dark:bg-gray-700/50 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg transition-colors text-left border-2 border-transparent">
+                    <div class="flex items-center gap-3">
+                        <i class="fa-solid fa-desktop text-blue-500 text-xl"></i>
+                        <div>
+                            <div class="font-medium text-gray-900 dark:text-white">System</div>
+                            <div class="text-xs text-gray-600 dark:text-gray-400">Match OS preference</div>
+                        </div>
+                    </div>
+                </button>
+                
+                <button type="button" onclick="setTheme('light')" id="theme-light"
+                    class="theme-option px-4 py-3 bg-gray-100 dark:bg-gray-700/50 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg transition-colors text-left border-2 border-transparent">
+                    <div class="flex items-center gap-3">
+                        <i class="fa-solid fa-sun text-yellow-500 text-xl"></i>
+                        <div>
+                            <div class="font-medium text-gray-900 dark:text-white">Light</div>
+                            <div class="text-xs text-gray-600 dark:text-gray-400">Always light theme</div>
+                        </div>
+                    </div>
+                </button>
+                
+                <button type="button" onclick="setTheme('dark')" id="theme-dark"
+                    class="theme-option px-4 py-3 bg-gray-100 dark:bg-gray-700/50 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg transition-colors text-left border-2 border-transparent">
+                    <div class="flex items-center gap-3">
+                        <i class="fa-solid fa-moon text-indigo-400 text-xl"></i>
+                        <div>
+                            <div class="font-medium text-gray-900 dark:text-white">Dark</div>
+                            <div class="text-xs text-gray-600 dark:text-gray-400">Always dark theme</div>
+                        </div>
+                    </div>
+                </button>
+            </div>
+        </div>
+    </div>
 </div>
 
 <!-- Settings Form -->
 <form id="settings-form" hx-post="/api/settings" hx-target="#save-result" hx-swap="innerHTML">
     
     <!-- Web Server Settings -->
-    <div class="bg-gray-800 rounded-lg p-4 sm:p-6 mb-4 sm:mb-6">
-        <h2 class="text-lg sm:text-xl font-semibold text-white mb-4 flex items-center gap-2">
+    <div class="bg-uc-light-card dark:bg-gray-800 rounded-lg p-4 sm:p-6 mb-4 sm:mb-6 border border-uc-light-border dark:border-transparent">
+        <h2 class="text-lg sm:text-xl font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
             <i class="fa-solid fa-server w-5 h-5"></i>
             Web Server
         </h2>
         
         <div class="space-y-4">
-            <label class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-3 sm:p-4 bg-gray-700/50 rounded-lg {% if is_external %}opacity-50 cursor-not-allowed{% else %}cursor-pointer hover:bg-gray-700{% endif %}">
+            <label class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-3 sm:p-4 bg-gray-100 dark:bg-gray-700/50 rounded-lg {% if is_external %}opacity-50 cursor-not-allowed{% else %}cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-700{% endif %}">
                 <div>
-                    <div class="text-white font-medium text-sm sm:text-base">Shutdown on Battery</div>
-                    <div class="text-xs sm:text-sm text-gray-400">
+                    <div class="text-gray-900 dark:text-white font-medium text-sm sm:text-base">Shutdown on Battery</div>
+                    <div class="text-xs sm:text-sm text-gray-600 dark:text-gray-400">
                         {% if is_external %}
                         Not applicable when running in Docker/external mode - web server always runs.
                         {% else %}
@@ -40,17 +88,17 @@
     </div>
 
     <!-- Update Settings -->
-    <div class="bg-gray-800 rounded-lg p-6 mb-6">
-        <h2 class="text-xl font-semibold text-white mb-4 flex items-center gap-2">
+    <div class="bg-uc-light-card dark:bg-gray-800 rounded-lg p-6 mb-6 border border-uc-light-border dark:border-transparent">
+        <h2 class="text-xl font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
             <i class="fa-solid fa-arrows-rotate w-5 h-5"></i>
             Updates
         </h2>
         
         <div class="space-y-4">
-            <label class="flex items-center justify-between p-4 bg-gray-700/50 rounded-lg cursor-pointer hover:bg-gray-700">
+            <label class="flex items-center justify-between p-4 bg-gray-100 dark:bg-gray-700/50 rounded-lg cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-700">
                 <div>
-                    <div class="text-white font-medium">Auto Update Integrations</div>
-                    <div class="text-sm text-gray-400">
+                    <div class="text-gray-900 dark:text-white font-medium">Auto Update Integrations</div>
+                    <div class="text-sm text-gray-600 dark:text-gray-400">
                         Automatically install updates when new versions are available.
                         Updates occur while the remote is docked. <br>Only integrations that support 
                         backup/restore will be auto-updated to ensure safe rollback if needed.
@@ -61,10 +109,10 @@
                        {% if settings.auto_update %}checked{% endif %}>
             </label>
             
-            <label class="flex items-center justify-between p-4 bg-gray-700/50 rounded-lg cursor-pointer hover:bg-gray-700">
+            <label class="flex items-center justify-between p-4 bg-gray-100 dark:bg-gray-700/50 rounded-lg cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-700">
                 <div>
-                    <div class="text-white font-medium">Auto-Register Entities After Update</div>
-                    <div class="text-sm text-gray-400">
+                    <div class="text-gray-900 dark:text-white font-medium">Auto-Register Entities After Update</div>
+                    <div class="text-sm text-gray-600 dark:text-gray-400">
                         Automatically re-register previously configured entities after upgrading an integration.
                         Only entities that were configured before the update will be re-registered.
                     </div>
@@ -74,10 +122,10 @@
                        {% if settings.auto_register_entities %}checked{% endif %}>
             </label>
             
-            <label class="flex items-center justify-between p-4 bg-gray-700/50 rounded-lg cursor-pointer hover:bg-gray-700">
+            <label class="flex items-center justify-between p-4 bg-gray-100 dark:bg-gray-700/50 rounded-lg cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-700">
                 <div>
-                    <div class="text-white font-medium">Show Beta Releases</div>
-                    <div class="text-sm text-gray-400">
+                    <div class="text-gray-900 dark:text-white font-medium">Show Beta Releases</div>
+                    <div class="text-sm text-gray-600 dark:text-gray-400">
                         Show pre-release (beta) versions in the version selector.
                         Beta versions appear above the latest stable release with an orange badge.
                     </div>
@@ -90,17 +138,17 @@
     </div>
 
     <!-- Backup Settings -->
-    <div class="bg-gray-800 rounded-lg p-6 mb-6">
-        <h2 class="text-xl font-semibold text-white mb-4 flex items-center gap-2">
+    <div class="bg-uc-light-card dark:bg-gray-800 rounded-lg p-6 mb-6 border border-uc-light-border dark:border-transparent">
+        <h2 class="text-xl font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
             <i class="fa-solid fa-download w-5 h-5"></i>
             Backups
         </h2>
         
         <div class="space-y-4">
-            <label class="flex items-center justify-between p-4 bg-gray-700/50 rounded-lg cursor-pointer hover:bg-gray-700">
+            <label class="flex items-center justify-between p-4 bg-gray-100 dark:bg-gray-700/50 rounded-lg cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-700">
                 <div>
-                    <div class="text-white font-medium">Backup Integration Configs</div>
-                    <div class="text-sm text-gray-400">
+                    <div class="text-gray-900 dark:text-white font-medium">Backup Integration Configs</div>
+                    <div class="text-sm text-gray-600 dark:text-gray-400">
                         Automatically backup configuration files for installed integrations.
                         Backups are stored in /data/backups.
                     </div>
@@ -110,11 +158,11 @@
                        {% if settings.backup_configs %}checked{% endif %}>
             </label>
             
-            <div class="p-4 bg-gray-700/50 rounded-lg">
+            <div class="p-4 bg-gray-100 dark:bg-gray-700/50 rounded-lg">
                 <div class="flex items-center justify-between">
                     <div>
-                        <div class="text-white font-medium">Backup Time</div>
-                        <div class="text-sm text-gray-400">What time each day to create backups</div>
+                        <div class="text-gray-900 dark:text-white font-medium">Backup Time</div>
+                        <div class="text-sm text-gray-600 dark:text-gray-400">What time each day to create backups</div>
                     </div>
                     <input type="time" name="backup_time" 
                            value="{{ settings.backup_time or '02:00' }}"
@@ -136,16 +184,16 @@
 </form>
 
 <!-- Backup Management -->
-<div class="mt-8 bg-gray-800 rounded-lg p-6">
-    <h2 class="text-xl font-semibold text-white mb-4 flex items-center gap-2">
+<div class="mt-8 bg-uc-light-card dark:bg-gray-800 rounded-lg p-6 border border-uc-light-border dark:border-transparent">
+    <h2 class="text-xl font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
         <i class="fa-solid fa-box-archive w-5 h-5"></i>
         Backup & Restore
     </h2>
     
     <!-- Export/Import Section -->
-    <div class="mb-6 pb-6 border-b border-gray-700">
-        <h3 class="text-lg font-medium text-white mb-3">Export & Import Data</h3>
-        <p class="text-sm text-gray-400 mb-4">Download or restore a complete backup file containing all integration configs and app settings. Use this before upgrading Integration Manager.</p>
+    <div class="mb-6 pb-6 border-b border-gray-300 dark:border-gray-700">
+        <h3 class="text-lg font-medium text-gray-900 dark:text-white mb-3">Export & Import Data</h3>
+        <p class="text-sm text-gray-600 dark:text-gray-400 mb-4">Download or restore a complete backup file containing all integration configs and app settings. Use this before upgrading Integration Manager.</p>
         
         <div class="flex items-center gap-4 flex-wrap">
             <!-- Download Complete Backup -->
@@ -168,8 +216,8 @@
     
     <!-- Integration Configs Section -->
     <div>
-        <h3 class="text-lg font-medium text-white mb-3">Integration Configurations</h3>
-        <p class="text-sm text-gray-400 mb-4">Capture current configuration snapshots from installed integrations. These are saved locally and can be restored through the Integrations page.</p>
+        <h3 class="text-lg font-medium text-gray-900 dark:text-white mb-3">Integration Configurations</h3>
+        <p class="text-sm text-gray-600 dark:text-gray-400 mb-4">Capture current configuration snapshots from installed integrations. These are saved locally and can be restored through the Integrations page.</p>
         
         <div class="flex items-center gap-4 flex-wrap">
             <button hx-post="/api/backups/create" 
@@ -229,21 +277,55 @@
 </div>
 
 <!-- Remote Connection Info -->
-<div class="mt-8 bg-gray-800 rounded-lg p-6">
-    <h2 class="text-xl font-semibold text-white mb-4 flex items-center gap-2">
+<div class="mt-8 bg-uc-light-card dark:bg-gray-800 rounded-lg p-6 border border-uc-light-border dark:border-transparent">
+    <h2 class="text-xl font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
         <i class="fa-solid fa-circle-info w-5 h-5"></i>
         Connection Info
     </h2>
     
-    <div class="grid grid-cols-2 gap-4 text-sm">
-        <div class="p-3 bg-gray-700/50 rounded-lg">
-            <div class="text-gray-400">Remote Address</div>
-            <div class="text-white font-mono">{{ remote_address or 'Not configured' }}</div>
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div class="p-3 bg-gray-100 dark:bg-gray-700/50 rounded-lg">
+            <div class="text-gray-600 dark:text-gray-400">Remote Address</div>
+            <div class="text-gray-900 dark:text-white font-mono">{{ remote_address or 'Not configured' }}</div>
         </div>
-        <div class="p-3 bg-gray-700/50 rounded-lg">
-            <div class="text-gray-400">Web Server Port</div>
-            <div class="text-white font-mono">{{ web_server_port }}</div>
+        <div class="p-3 bg-gray-100 dark:bg-gray-700/50 rounded-lg">
+            <div class="text-gray-600 dark:text-gray-400">Web Server Port</div>
+            <div class="text-gray-900 dark:text-white font-mono">{{ web_server_port }}</div>
         </div>
     </div>
 </div>
+
+<script>
+    // Theme selection UI update
+    function updateThemeUI() {
+        const currentTheme = localStorage.getItem('theme') || 'system';
+        console.log('Updating theme UI. Current theme:', currentTheme);
+        
+        // Remove active state from all options
+        document.querySelectorAll('.theme-option').forEach(btn => {
+            btn.classList.remove('border-uc-primary', 'bg-uc-primary/10', 'dark:bg-uc-primary/10');
+            btn.classList.add('border-transparent');
+        });
+        
+        // Add active state to selected option
+        const activeBtn = document.getElementById(`theme-${currentTheme}`);
+        if (activeBtn) {
+            activeBtn.classList.remove('border-transparent');
+            activeBtn.classList.add('border-uc-primary', 'bg-uc-primary/10', 'dark:bg-uc-primary/10');
+            console.log('Set active theme button:', currentTheme);
+        } else {
+            console.warn('Could not find button for theme:', currentTheme);
+        }
+    }
+    
+    // Update UI on page load
+    console.log('Settings page theme script loaded');
+    updateThemeUI();
+    
+    // Update UI when theme changes
+    window.addEventListener('themeChanged', (e) => {
+        console.log('themeChanged event received:', e.detail);
+        updateThemeUI();
+    });
+</script>
 {% endblock %}

@@ -7,8 +7,8 @@
     <!-- Page Header -->
     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-0">
         <div>
-            <h2 class="text-xl sm:text-2xl font-bold text-white">Your Integrations</h2>
-            <p class="mt-1 text-sm sm:text-base text-gray-400">
+            <h2 class="text-xl sm:text-2xl font-bold text-gray-900 dark:text-white">Your Integrations</h2>
+            <p class="mt-1 text-sm sm:text-base text-gray-600 dark:text-gray-400">
                 Manage your installed custom integrations
             </p>
         </div>
@@ -26,7 +26,7 @@
     </div>
 
     <!-- Filter/Search Bar -->
-    <div class="bg-uc-card rounded-xl p-4 border border-uc-border">
+    <div class="bg-uc-light-card dark:bg-uc-card rounded-xl p-4 border border-uc-light-border dark:border-uc-border">
         <div class="flex flex-col sm:flex-row gap-4">
             <div class="flex-1">
                 <div class="relative">
@@ -36,11 +36,11 @@
                         id="intg-search"
                         placeholder="Search integrations..." 
                         oninput="filterInstalledIntegrations()"
-                        class="w-full pl-10 pr-4 py-2 bg-uc-darker border border-uc-border rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-uc-primary focus:border-transparent">
+                        class="w-full pl-10 pr-4 py-2 bg-white dark:bg-uc-darker border border-gray-300 dark:border-uc-border rounded-lg text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-uc-primary focus:border-transparent">
                 </div>
             </div>
             <div class="flex flex-col sm:flex-row gap-2">
-                <select id="intg-status-filter" onchange="filterInstalledIntegrations()" class="px-3 sm:px-4 py-2 bg-uc-darker border border-uc-border rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-uc-primary">
+                <select id="intg-status-filter" onchange="filterInstalledIntegrations()" class="px-3 sm:px-4 py-2 bg-white dark:bg-uc-darker border border-gray-300 dark:border-uc-border rounded-lg text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-uc-primary">
                     <option value="all">All Status</option>
                     <option value="updates">Updates Available</option>
                     <option value="needs-config">Needs Configuration</option>
