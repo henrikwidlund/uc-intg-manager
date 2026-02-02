@@ -18,7 +18,14 @@ from typing import Any
 
 import certifi
 import requests
-from const import GITHUB_API_BASE, KNOWN_INTEGRATIONS_URL
+from const import (
+    GITHUB_API_BASE,
+    KNOWN_INTEGRATIONS_URL,
+    REPO_CACHE_VALIDITY,
+    REPO_FETCH_BATCH_SIZE,
+    REPO_FETCH_BATCH_INTERVAL,
+    MANAGER_DATA_FILE,
+)
 from packaging.version import InvalidVersion, Version
 from requests.auth import HTTPBasicAuth
 from ucapi_framework import find_orphaned_entities
@@ -1039,6 +1046,58 @@ class SyncGitHubClient:
         except requests.RequestException:
             return None
 
+    def get_repository_info(self, owner: str, repo: str) -> dict[str, Any] | None:
+        """
+        Get repository information including stars, forks, and dates.
+
+        :param owner: Repository owner
+        :param repo: Repository name
+        :return: Repository data or None if not found
+        """
+        url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}"
+
+        try:
+            response = self._session.get(url, timeout=REQUEST_TIMEOUT)
+
+            # Check for rate limiting
+            rate_limit_remaining = response.headers.get("X-RateLimit-Remaining")
+            if response.status_code == 403 and rate_limit_remaining == "0":
+                rate_limit_reset = response.headers.get("X-RateLimit-Reset")
+                reset_time = (
+                    datetime.fromtimestamp(int(rate_limit_reset))
+                    if rate_limit_reset
+                    else None
+                )
+                reset_str = (
+                    reset_time.strftime("%Y-%m-%d %H:%M:%S")
+                    if reset_time
+                    else "unknown"
+                )
+                _LOG.warning(
+                    "GitHub API rate limit exceeded for %s/%s. Reset at: %s",
+                    owner,
+                    repo,
+                    reset_str,
+                )
+                return None
+
+            if response.status_code == 200:
+                data = response.json()
+                # Extract only the fields we need
+                return {
+                    "stargazers_count": data.get("stargazers_count", 0),
+                    "forks_count": data.get("forks_count", 0),
+                    "watchers_count": data.get("watchers_count", 0),
+                    "created_at": data.get("created_at", ""),
+                    "updated_at": data.get("updated_at", ""),
+                    "pushed_at": data.get("pushed_at", ""),
+                    "open_issues_count": data.get("open_issues_count", 0),
+                }
+            return None
+        except requests.RequestException as e:
+            _LOG.warning("Failed to get repository info for %s/%s: %s", owner, repo, e)
+            return None
+
     @staticmethod
     def compare_versions(current: str, latest: str) -> bool:
         """Check if latest version is newer than current."""
@@ -1049,6 +1108,160 @@ class SyncGitHubClient:
             return Version(latest_clean) > Version(current_clean)
         except (InvalidVersion, TypeError, AttributeError):
             return False
+
+
+def load_repo_cache() -> dict[str, Any]:
+    """
+    Load repository cache from manager.json.
+
+    Cache structure (stored in manager.json under "repo_cache" key):
+    {
+        "last_batch_time": timestamp,
+        "repos": {
+            "owner/repo": {
+                "cached_at": timestamp,
+                "data": {...repo_info...}
+            }
+        }
+    }
+
+    :return: Cache dictionary with last_batch_time and repos
+    """
+
+    if not os.path.exists(MANAGER_DATA_FILE):
+        return {"last_batch_time": 0, "repos": {}}
+
+    try:
+        with open(MANAGER_DATA_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            cache = data.get("repo_cache", {})
+            # Ensure proper structure
+            if "repos" not in cache:
+                return {
+                    "last_batch_time": 0,
+                    "repos": cache if isinstance(cache, dict) else {},
+                }
+            return cache
+    except (OSError, json.JSONDecodeError) as e:
+        _LOG.warning("Failed to load repo cache: %s", e)
+        return {"last_batch_time": 0, "repos": {}}
+
+
+def save_repo_cache(cache: dict[str, Any]) -> None:
+    """
+    Save repository cache to manager.json.
+
+    :param cache: Cache dictionary with last_batch_time and repos
+    """
+
+    try:
+        os.makedirs(os.path.dirname(MANAGER_DATA_FILE), exist_ok=True)
+
+        # Load existing data to preserve other sections
+        existing_data = {}
+        if os.path.exists(MANAGER_DATA_FILE):
+            try:
+                with open(MANAGER_DATA_FILE, "r", encoding="utf-8") as f:
+                    existing_data = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        # Update repo_cache section
+        existing_data["repo_cache"] = cache
+
+        with open(MANAGER_DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(existing_data, f, indent=2)
+    except OSError as e:
+        _LOG.warning("Failed to save repo cache: %s", e)
+
+
+def get_cached_repo_info(
+    owner: str, repo: str, github_client: "SyncGitHubClient"
+) -> dict[str, Any]:
+    """
+    Get repository info from cache or add to fetch queue.
+
+    This function implements rate-limiting by only fetching REPO_FETCH_BATCH_SIZE
+    repositories per REPO_FETCH_BATCH_INTERVAL. If a repo needs updating but
+    we've hit the batch limit, it returns the expired cache (or empty dict).
+
+    :param owner: Repository owner
+    :param repo: Repository name
+    :param github_client: GitHub client instance
+    :return: Repository info dict (stars, dates, etc.) or empty dict if unavailable
+    """
+    cache = load_repo_cache()
+    repos = cache.get("repos", {})
+    last_batch_time = cache.get("last_batch_time", 0)
+    cache_key = f"{owner}/{repo}"
+    now = datetime.now().timestamp()
+
+    # Check if we have valid cached data
+    if cache_key in repos:
+        cached_entry = repos[cache_key]
+        cached_time = cached_entry.get("cached_at", 0)
+        if now - cached_time < REPO_CACHE_VALIDITY:
+            _LOG.debug("Using cached repo info for %s", cache_key)
+            return cached_entry.get("data", {})
+
+    # Check if we can start a new batch (1 hour has passed)
+    can_fetch_batch = (now - last_batch_time) >= REPO_FETCH_BATCH_INTERVAL
+
+    if can_fetch_batch:
+        # Collect repos that need updating (expired or missing)
+        repos_to_fetch = []
+        for key in repos:
+            cached_time = repos[key].get("cached_at", 0)
+            if now - cached_time >= REPO_CACHE_VALIDITY:
+                repos_to_fetch.append(key)
+
+        # Add current repo if not already in the list
+        if cache_key not in repos or cache_key not in repos_to_fetch:
+            repos_to_fetch.append(cache_key)
+
+        # Fetch up to BATCH_SIZE repos
+        fetch_count = 0
+        for fetch_key in repos_to_fetch[:REPO_FETCH_BATCH_SIZE]:
+            if fetch_count >= REPO_FETCH_BATCH_SIZE:
+                break
+
+            parts = fetch_key.split("/", 1)
+            if len(parts) != 2:
+                continue
+
+            fetch_owner, fetch_repo = parts
+            _LOG.debug(
+                "Fetching repo info for %s (%d/%d in batch)",
+                fetch_key,
+                fetch_count + 1,
+                REPO_FETCH_BATCH_SIZE,
+            )
+
+            repo_info = github_client.get_repository_info(fetch_owner, fetch_repo)
+            if repo_info:
+                repos[fetch_key] = {"cached_at": now, "data": repo_info}
+                fetch_count += 1
+
+        # Update last batch time if we fetched anything
+        if fetch_count > 0:
+            cache["last_batch_time"] = now
+            cache["repos"] = repos
+            save_repo_cache(cache)
+            _LOG.info(
+                "Fetched %d repository info entries (batch complete)", fetch_count
+            )
+
+        # Return the data for the requested repo
+        if cache_key in repos:
+            return repos[cache_key].get("data", {})
+
+    # Can't fetch now - return expired cache if available
+    if cache_key in repos:
+        _LOG.debug("Using expired cache for %s (batch limit)", cache_key)
+        return repos[cache_key].get("data", {})
+
+    _LOG.debug("No cache for %s, waiting for next batch window", cache_key)
+    return {}
 
 
 def load_registry() -> list[dict[str, Any]]:

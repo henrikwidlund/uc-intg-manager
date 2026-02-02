@@ -35,7 +35,16 @@ DATA_DIR = _get_data_dir()
 # Manager data file - stores settings, integration backups, and other persistent data
 MANAGER_DATA_FILE = os.path.join(DATA_DIR, "manager.json")
 
-# System messages file - stores announcements and notifications for users
+# Repository cache validity duration (24 hours in seconds)
+REPO_CACHE_VALIDITY = 86400
+
+# Maximum number of repository info requests per hour to avoid rate limits
+REPO_FETCH_BATCH_SIZE = 10
+
+# Minimum time between batches (1 hour in seconds)
+REPO_FETCH_BATCH_INTERVAL = 3600
+
+# System messages file - stores system announcements and notifications
 SYSTEM_MESSAGES_FILE = os.path.join(DATA_DIR, "system_messages.json")
 
 # System messages GitHub URL - remote source for messages
@@ -79,6 +88,12 @@ class Settings:
 
     show_beta_releases: bool = False
     """Show pre-release (beta) versions in version selector."""
+
+    sort_by: str = "stars"
+    """Sort available integrations by: 'stars', 'downloads', 'updated', 'created', 'name', or 'original'."""
+
+    sort_reverse: bool = False
+    """Reverse the sort order for available integrations."""
 
     @classmethod
     def load(cls) -> "Settings":

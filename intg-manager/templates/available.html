@@ -61,6 +61,30 @@
                     <option value="installed">Installed</option>
                     <option value="updates">Updates Available</option>
                 </select>
+                <div class="flex gap-2 w-full sm:w-auto">
+                    <select id="available-sort-by" 
+                            hx-post="/api/settings/sort"
+                            hx-vals='js:{sort_by: event.target.value, sort_reverse: document.getElementById("sort-reverse-flag").value}'
+                            hx-target="#available-container"
+                            hx-swap="innerHTML"
+                            hx-indicator="#refresh-spinner"
+                            class="flex-1 sm:flex-initial px-3 sm:px-4 py-2 bg-white dark:bg-uc-darker border border-gray-300 dark:border-uc-border rounded-lg text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-uc-primary">
+                        <option value="original">Original Order</option>
+                        <option value="stars">Most Stars</option>
+                        <option value="downloads">Most Downloads</option>
+                        <option value="created">Newest</option>
+                        <option value="updated">Recently Updated</option>
+                        <option value="name">Alphabetical</option>
+                    </select>
+                    <button 
+                        id="sort-reverse-btn"
+                        onclick="toggleSortReverse()"
+                        title="Reverse sort order"
+                        class="p-2 bg-white dark:bg-uc-darker border border-gray-300 dark:border-uc-border rounded-lg text-gray-900 dark:text-white hover:bg-gray-100 dark:hover:bg-uc-card transition-colors">
+                        <i id="sort-reverse-icon" class="fa-solid fa-arrow-down-wide-short h-4 w-4"></i>
+                    </button>
+                    <input type="hidden" id="sort-reverse-flag" value="false">
+                </div>
             </div>
         </div>
     </div>
@@ -115,5 +139,52 @@ function filterAvailableIntegrations() {
         card.style.display = (matchesSearch && matchesCategory && matchesStatus) ? '' : 'none';
     });
 }
+
+function toggleSortReverse() {
+    const reverseFlag = document.getElementById('sort-reverse-flag');
+    const reverseIcon = document.getElementById('sort-reverse-icon');
+    const sortBy = document.getElementById('available-sort-by').value;
+    
+    // Toggle the flag
+    const newReverse = reverseFlag.value === 'false' ? 'true' : 'false';
+    reverseFlag.value = newReverse;
+    
+    // Update icon
+    if (newReverse === 'true') {
+        reverseIcon.className = 'fa-solid fa-arrow-up-wide-short h-4 w-4';
+    } else {
+        reverseIcon.className = 'fa-solid fa-arrow-down-wide-short h-4 w-4';
+    }
+    
+    // Trigger HTMX request to update sort
+    htmx.ajax('POST', '/api/settings/sort', {
+        target: '#available-container',
+        swap: 'innerHTML',
+        values: {
+            sort_by: sortBy,
+            sort_reverse: newReverse
+        }
+    });
+}
+
+// Load saved sort settings on page load
+document.addEventListener('DOMContentLoaded', function() {
+    fetch('/api/settings/sort')
+        .then(response => response.json())
+        .then(data => {
+            if (data.sort_by) {
+                document.getElementById('available-sort-by').value = data.sort_by;
+            }
+            if (data.sort_reverse !== undefined) {
+                const reverseFlag = document.getElementById('sort-reverse-flag');
+                const reverseIcon = document.getElementById('sort-reverse-icon');
+                reverseFlag.value = data.sort_reverse ? 'true' : 'false';
+                if (data.sort_reverse) {
+                    reverseIcon.className = 'fa-solid fa-arrow-up-wide-short h-4 w-4';
+                }
+            }
+        })
+        .catch(err => console.error('Failed to load sort settings:', err));
+});
 </script>
 {% endblock %}

@@ -45,15 +45,25 @@ from backup_service import (
     backup_all_integrations,
     get_backup,
 )
-from const import WEB_SERVER_PORT, Settings, API_DELAY, MANAGER_DATA_FILE
+from const import (
+    WEB_SERVER_PORT,
+    Settings,
+    API_DELAY,
+    MANAGER_DATA_FILE,
+    REPO_FETCH_BATCH_INTERVAL,
+    REPO_FETCH_BATCH_SIZE,
+)
 from log_handler import get_log_entries, get_log_handler
 from migration_service import extract_migration_mappings
 from sync_api import (
     SyncRemoteClient,
     SyncGitHubClient,
+    load_repo_cache,
     load_registry,
     SyncAPIError,
     find_orphaned_ir_codesets,
+    get_cached_repo_info,
+    save_repo_cache,
 )
 from packaging.version import Version, InvalidVersion
 
@@ -193,6 +203,12 @@ class AvailableIntegration:
     can_update: bool = False  # Show update button (always true if update available for custom integrations)
     can_auto_update: bool = False  # Can do automated backup/restore (requires supports_backup and min version)
     supports_backup: bool = False  # Uses ucapi-framework with backup support
+    # Repository stats (from GitHub API)
+    stars: int = 0
+    created_at: str = ""
+    pushed_at: str = ""
+    downloads: int = 0
+    original_index: int = 0  # Original position in registry
 
     @property
     def install_status(self) -> str:
@@ -286,10 +302,18 @@ def _refresh_version_cache() -> None:
                     has_update = SyncGitHubClient.compare_versions(
                         current_version, latest_version
                     )
+
+                    # Calculate total downloads from all release assets
+                    total_downloads = 0
+                    assets = release.get("assets", [])
+                    for asset in assets:
+                        total_downloads += asset.get("download_count", 0)
+
                     version_updates[integration.driver_id] = {
                         "current": current_version,
                         "latest": latest_version,
                         "has_update": has_update,
+                        "downloads": total_downloads,
                     }
 
                     # Send notification for update available
@@ -766,6 +790,29 @@ def _get_available_integrations() -> list[AvailableIntegration]:
                             # If version parsing fails, allow auto update if supports_backup
                             pass
 
+        # Fetch repository stats from GitHub (cached)
+        stars = 0
+        created_at = ""
+        pushed_at = ""
+        downloads = 0
+
+        if _github_client and home_page and "github.com" in home_page:
+            try:
+                parsed = SyncGitHubClient.parse_github_url(home_page)
+                if parsed:
+                    owner, repo = parsed
+                    repo_info = get_cached_repo_info(owner, repo, _github_client)
+                    if repo_info:
+                        stars = repo_info.get("stargazers_count", 0)
+                        created_at = repo_info.get("created_at", "")
+                        pushed_at = repo_info.get("pushed_at", "")
+            except Exception as e:
+                _LOG.debug("Failed to get repo info for %s: %s", name, e)
+
+        # Get download count from version cache (populated during version checks)
+        if actual_driver_id and actual_driver_id in _cached_version_data:
+            downloads = _cached_version_data[actual_driver_id].get("downloads", 0)
+
         categories_list = item.get("categories", [])
         avail = AvailableIntegration(
             driver_id=actual_driver_id if actual_driver_id else driver_id,
@@ -788,8 +835,30 @@ def _get_available_integrations() -> list[AvailableIntegration]:
             can_update=can_update,
             can_auto_update=can_auto_update,
             supports_backup=supports_backup,
+            stars=stars,
+            created_at=created_at,
+            pushed_at=pushed_at,
+            downloads=downloads,
+            original_index=len(available),
         )
         available.append(avail)
+
+    # Apply sorting based on settings
+    settings = Settings.load()
+    sort_by = settings.sort_by
+    sort_reverse = settings.sort_reverse
+
+    if sort_by == "stars":
+        available.sort(key=lambda x: x.stars, reverse=not sort_reverse)
+    elif sort_by == "created":
+        available.sort(key=lambda x: x.created_at or "", reverse=not sort_reverse)
+    elif sort_by == "updated":
+        available.sort(key=lambda x: x.pushed_at or "", reverse=not sort_reverse)
+    elif sort_by == "name":
+        available.sort(key=lambda x: x.name.lower(), reverse=sort_reverse)
+    elif sort_by == "downloads":
+        available.sort(key=lambda x: x.downloads, reverse=not sort_reverse)
+    # "original" or any other value = keep original registry order (no sorting needed)
 
     # Check for new integrations in registry and send notification
     try:
@@ -3634,6 +3703,37 @@ def get_settings():
     return jsonify(settings.to_dict())
 
 
+@app.route("/api/settings/sort", methods=["GET"])
+def get_sort_settings():
+    """Get current sort settings as JSON."""
+    settings = Settings.load()
+    return jsonify({"sort_by": settings.sort_by, "sort_reverse": settings.sort_reverse})
+
+
+@app.route("/api/settings/sort", methods=["POST"])
+def update_sort_settings():
+    """Update sort settings and return refreshed available integrations list."""
+    try:
+        settings = Settings.load()
+        settings.sort_by = request.form.get("sort_by", "stars")
+        # Convert string 'true'/'false' to boolean
+        sort_reverse_str = request.form.get("sort_reverse", "false")
+        settings.sort_reverse = sort_reverse_str == "true"
+        settings.save()
+
+        # Return refreshed available integrations with new sort
+        available = _get_available_integrations()
+        remote_ip = _remote_client._address if _remote_client else None
+        return render_template(
+            "partials/available_list.html",
+            integrations=available,
+            remote_ip=remote_ip,
+        )
+    except Exception as e:
+        _LOG.error("Failed to update sort settings: %s", e)
+        return f"<div class='text-red-600 dark:text-red-400'>Error: {e}</div>", 500
+
+
 # ============================================================================
 # Notification Routes
 # ============================================================================
@@ -4966,6 +5066,94 @@ class WebServer:
             _LOG.debug("New integration check complete")
         except Exception as e:
             _LOG.warning("Failed to check for new integrations: %s", e)
+
+    def fetch_repository_batch(self) -> None:
+        """
+        Fetch a batch of repository data from GitHub if batch window is open.
+
+        This is called periodically (e.g., during polling) to gradually populate
+        the repository cache without overwhelming GitHub's API rate limits.
+        Only fetches if the 1-hour batch interval has elapsed.
+        """
+        if not _github_client:
+            return
+
+        try:
+            cache = load_repo_cache()
+            last_batch_time = cache.get("last_batch_time", 0)
+            now = datetime.now().timestamp()
+
+            # Check if we can start a new batch (1 hour has passed)
+            can_fetch_batch = (now - last_batch_time) >= REPO_FETCH_BATCH_INTERVAL
+
+            if not can_fetch_batch:
+                time_until_next = REPO_FETCH_BATCH_INTERVAL - (now - last_batch_time)
+                _LOG.debug(
+                    "Repository batch fetch: waiting %.1f minutes until next batch window",
+                    time_until_next / 60,
+                )
+                return
+
+            # Get list of all integrations from registry
+            registry = load_registry()
+            repos_cache = cache.get("repos", {})
+            repos_to_fetch = []
+
+            # Collect repos that need updating (expired or missing)
+            for item in registry:
+                home_page = item.get("repository", "")
+                if home_page and "github.com" in home_page:
+                    parsed = SyncGitHubClient.parse_github_url(home_page)
+                    if parsed:
+                        owner, repo = parsed
+                        cache_key = f"{owner}/{repo}"
+
+                        # Check if missing or expired
+                        if cache_key not in repos_cache:
+                            repos_to_fetch.append((owner, repo, cache_key))
+                        else:
+                            cached_time = repos_cache[cache_key].get("cached_at", 0)
+                            if now - cached_time >= 86400:  # REPO_CACHE_VALIDITY
+                                repos_to_fetch.append((owner, repo, cache_key))
+
+            if not repos_to_fetch:
+                _LOG.debug("Repository batch fetch: all repos up to date")
+                # Update last_batch_time anyway to prevent constant checking
+                cache["last_batch_time"] = now
+
+                save_repo_cache(cache)
+                return
+
+            # Fetch up to BATCH_SIZE repos
+            fetch_count = 0
+            for owner, repo, cache_key in repos_to_fetch[:REPO_FETCH_BATCH_SIZE]:
+                _LOG.debug(
+                    "Fetching repo info for %s/%s (%d/%d in batch)",
+                    owner,
+                    repo,
+                    fetch_count + 1,
+                    REPO_FETCH_BATCH_SIZE,
+                )
+
+                repo_info = _github_client.get_repository_info(owner, repo)
+                if repo_info:
+                    repos_cache[cache_key] = {"cached_at": now, "data": repo_info}
+                    fetch_count += 1
+
+            # Save updated cache
+            if fetch_count > 0:
+                cache["last_batch_time"] = now
+                cache["repos"] = repos_cache
+
+                save_repo_cache(cache)
+                _LOG.info(
+                    "Fetched %d/%d repository info entries in background batch",
+                    fetch_count,
+                    len(repos_to_fetch),
+                )
+
+        except Exception as e:
+            _LOG.warning("Failed to fetch repository batch: %s", e)
 
     def check_orphaned_entities(self) -> None:
         """

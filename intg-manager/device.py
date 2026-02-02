@@ -267,6 +267,15 @@ class IntegrationManagerDevice(PollingDevice):
             if self._web_server and self._web_server.is_running:
                 self._web_server.check_error_states()
 
+            # Fetch repository data batch (every 60 polls = 30 minutes at 30s each)
+            # Only check when web server is running - internal rate limiting ensures max 10 requests/hour
+            if (
+                self._web_server
+                and self._web_server.is_running
+                and self._poll_count % 60 == 0
+            ):
+                self._web_server.fetch_repository_batch()
+
             # Web server health check - verify server is actually accessible when it should be running
             await self._check_web_server_health()
 
