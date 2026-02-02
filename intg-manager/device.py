@@ -258,6 +258,7 @@ class IntegrationManagerDevice(PollingDevice):
                 and self._poll_count % VERSION_CHECK_INTERVAL_POLLS == 0
             ):
                 await self._check_integration_versions()
+                self._web_server.fetch_repository_batch()
 
             # Periodic backup check - only when docked and web server is running
             if self._is_docked and self._web_server and self._web_server.is_running:
@@ -266,15 +267,6 @@ class IntegrationManagerDevice(PollingDevice):
             # Check for integration error states (disconnected, error, etc.) - runs every poll
             if self._web_server and self._web_server.is_running:
                 self._web_server.check_error_states()
-
-            # Fetch repository data batch (every 60 polls = 30 minutes at 30s each)
-            # Only check when web server is running - internal rate limiting ensures max 10 requests/hour
-            if (
-                self._web_server
-                and self._web_server.is_running
-                and self._poll_count % 60 == 0
-            ):
-                self._web_server.fetch_repository_batch()
 
             # Web server health check - verify server is actually accessible when it should be running
             await self._check_web_server_health()

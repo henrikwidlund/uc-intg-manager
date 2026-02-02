@@ -22,8 +22,6 @@ from const import (
     GITHUB_API_BASE,
     KNOWN_INTEGRATIONS_URL,
     REPO_CACHE_VALIDITY,
-    REPO_FETCH_BATCH_SIZE,
-    REPO_FETCH_BATCH_INTERVAL,
     MANAGER_DATA_FILE,
 )
 from packaging.version import InvalidVersion, Version
@@ -1192,7 +1190,6 @@ def get_cached_repo_info(
     """
     cache = load_repo_cache()
     repos = cache.get("repos", {})
-    last_batch_time = cache.get("last_batch_time", 0)
     cache_key = f"{owner}/{repo}"
     now = datetime.now().timestamp()
 
@@ -1204,60 +1201,11 @@ def get_cached_repo_info(
             _LOG.debug("Using cached repo info for %s", cache_key)
             return cached_entry.get("data", {})
 
-    # Check if we can start a new batch (1 hour has passed)
-    can_fetch_batch = (now - last_batch_time) >= REPO_FETCH_BATCH_INTERVAL
-
-    if can_fetch_batch:
-        # Collect repos that need updating (expired or missing)
-        repos_to_fetch = []
-        for key in repos:
-            cached_time = repos[key].get("cached_at", 0)
-            if now - cached_time >= REPO_CACHE_VALIDITY:
-                repos_to_fetch.append(key)
-
-        # Add current repo if not already in the list
-        if cache_key not in repos or cache_key not in repos_to_fetch:
-            repos_to_fetch.append(cache_key)
-
-        # Fetch up to BATCH_SIZE repos
-        fetch_count = 0
-        for fetch_key in repos_to_fetch[:REPO_FETCH_BATCH_SIZE]:
-            if fetch_count >= REPO_FETCH_BATCH_SIZE:
-                break
-
-            parts = fetch_key.split("/", 1)
-            if len(parts) != 2:
-                continue
-
-            fetch_owner, fetch_repo = parts
-            _LOG.debug(
-                "Fetching repo info for %s (%d/%d in batch)",
-                fetch_key,
-                fetch_count + 1,
-                REPO_FETCH_BATCH_SIZE,
-            )
-
-            repo_info = github_client.get_repository_info(fetch_owner, fetch_repo)
-            if repo_info:
-                repos[fetch_key] = {"cached_at": now, "data": repo_info}
-                fetch_count += 1
-
-        # Update last batch time if we fetched anything
-        if fetch_count > 0:
-            cache["last_batch_time"] = now
-            cache["repos"] = repos
-            save_repo_cache(cache)
-            _LOG.info(
-                "Fetched %d repository info entries (batch complete)", fetch_count
-            )
-
-        # Return the data for the requested repo
-        if cache_key in repos:
-            return repos[cache_key].get("data", {})
-
-    # Can't fetch now - return expired cache if available
+    # No valid cache - return expired cache if available, or empty dict
+    # Background batching in web_server.py will populate this over time
     if cache_key in repos:
-        _LOG.debug("Using expired cache for %s (batch limit)", cache_key)
+        _LOG.debug("Using expired cache for %s (will refresh in background)", cache_key)
+        return repos[cache_key].get("data", {})
         return repos[cache_key].get("data", {})
 
     _LOG.debug("No cache for %s, waiting for next batch window", cache_key)

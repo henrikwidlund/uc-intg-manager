@@ -50,6 +50,7 @@ from const import (
     Settings,
     API_DELAY,
     MANAGER_DATA_FILE,
+    REPO_CACHE_VALIDITY,
     REPO_FETCH_BATCH_INTERVAL,
     REPO_FETCH_BATCH_SIZE,
 )
@@ -5075,7 +5076,12 @@ class WebServer:
         the repository cache without overwhelming GitHub's API rate limits.
         Only fetches if the 1-hour batch interval has elapsed.
         """
+        _LOG.debug("fetch_repository_batch: Called (runs every 15 minutes)")
+
         if not _github_client:
+            _LOG.warning(
+                "fetch_repository_batch: GitHub client not initialized, skipping"
+            )
             return
 
         try:
@@ -5089,10 +5095,15 @@ class WebServer:
             if not can_fetch_batch:
                 time_until_next = REPO_FETCH_BATCH_INTERVAL - (now - last_batch_time)
                 _LOG.debug(
-                    "Repository batch fetch: waiting %.1f minutes until next batch window",
+                    "Repository batch fetch: waiting %.1f minutes until next batch window (last batch: %.1f min ago)",
                     time_until_next / 60,
+                    (now - last_batch_time) / 60,
                 )
                 return
+
+            _LOG.info(
+                "Repository batch fetch: Batch window open, checking for repos to update"
+            )
 
             # Get list of all integrations from registry
             registry = load_registry()
@@ -5113,18 +5124,28 @@ class WebServer:
                             repos_to_fetch.append((owner, repo, cache_key))
                         else:
                             cached_time = repos_cache[cache_key].get("cached_at", 0)
-                            if now - cached_time >= 86400:  # REPO_CACHE_VALIDITY
+                            if now - cached_time >= REPO_CACHE_VALIDITY:
                                 repos_to_fetch.append((owner, repo, cache_key))
 
-            if not repos_to_fetch:
-                _LOG.debug("Repository batch fetch: all repos up to date")
-                # Update last_batch_time anyway to prevent constant checking
-                cache["last_batch_time"] = now
+            _LOG.info(
+                "Repository batch fetch: Found %d repos needing updates (total in registry: %d, cached: %d)",
+                len(repos_to_fetch),
+                len(registry),
+                len(repos_cache),
+            )
 
-                save_repo_cache(cache)
+            if not repos_to_fetch:
+                _LOG.info(
+                    "Repository batch fetch: all repos up to date, no fetch needed"
+                )
                 return
 
             # Fetch up to BATCH_SIZE repos
+            _LOG.debug(
+                "Repository batch fetch: Starting batch of up to %d repos",
+                min(REPO_FETCH_BATCH_SIZE, len(repos_to_fetch)),
+            )
+
             fetch_count = 0
             for owner, repo, cache_key in repos_to_fetch[:REPO_FETCH_BATCH_SIZE]:
                 _LOG.debug(
@@ -5132,28 +5153,46 @@ class WebServer:
                     owner,
                     repo,
                     fetch_count + 1,
-                    REPO_FETCH_BATCH_SIZE,
+                    min(REPO_FETCH_BATCH_SIZE, len(repos_to_fetch)),
                 )
 
                 repo_info = _github_client.get_repository_info(owner, repo)
                 if repo_info:
                     repos_cache[cache_key] = {"cached_at": now, "data": repo_info}
                     fetch_count += 1
+                    _LOG.debug("Successfully fetched %s/%s", owner, repo)
+                else:
+                    _LOG.warning("Failed to fetch repo info for %s/%s", owner, repo)
 
             # Save updated cache
             if fetch_count > 0:
+                # Always update last_batch_time after fetching to enforce 1-hour rate limit
+                # This ensures we only fetch max 10 repos per hour (REPO_FETCH_BATCH_SIZE)
                 cache["last_batch_time"] = now
                 cache["repos"] = repos_cache
-
                 save_repo_cache(cache)
-                _LOG.info(
-                    "Fetched %d/%d repository info entries in background batch",
-                    fetch_count,
-                    len(repos_to_fetch),
-                )
+
+                remaining_count = len(repos_to_fetch) - fetch_count
+                if remaining_count == 0:
+                    _LOG.info(
+                        "Repository batch fetch: Successfully fetched %d/%d repos - ALL REPOS CACHED (%d total)",
+                        fetch_count,
+                        len(repos_to_fetch),
+                        len(repos_cache),
+                    )
+                else:
+                    _LOG.info(
+                        "Repository batch fetch: Successfully fetched %d/%d repos (total cached: %d, remaining: %d) - next batch in 1 hour",
+                        fetch_count,
+                        len(repos_to_fetch),
+                        len(repos_cache),
+                        remaining_count,
+                    )
+            else:
+                _LOG.warning("Repository batch fetch: No repos successfully fetched")
 
         except Exception as e:
-            _LOG.warning("Failed to fetch repository batch: %s", e)
+            _LOG.error("Failed to fetch repository batch: %s", e, exc_info=True)
 
     def check_orphaned_entities(self) -> None:
         """
