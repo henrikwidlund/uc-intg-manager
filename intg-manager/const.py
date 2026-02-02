@@ -35,13 +35,22 @@ DATA_DIR = _get_data_dir()
 # Manager data file - stores settings, integration backups, and other persistent data
 MANAGER_DATA_FILE = os.path.join(DATA_DIR, "manager.json")
 
-# System messages file - stores announcements and notifications for users
+# Repository cache validity duration (24 hours in seconds)
+REPO_CACHE_VALIDITY = 86400
+
+# Maximum number of repository info requests per hour to avoid rate limits
+REPO_FETCH_BATCH_SIZE = 10
+
+# Minimum time between batches (1 hour in seconds)
+REPO_FETCH_BATCH_INTERVAL = 3600
+
+# System messages file - stores system announcements and notifications
 SYSTEM_MESSAGES_FILE = os.path.join(DATA_DIR, "system_messages.json")
 
 # System messages GitHub URL - remote source for messages
 SYSTEM_MESSAGES_URL = "https://raw.githubusercontent.com/JackJPowell/uc-intg-list/main/system_messages.json"
 
-# Version check interval (in poll cycles, at 60s each = 30 min)
+# Version check interval (in poll cycles, at 30s each = 15 min)
 VERSION_CHECK_INTERVAL_POLLS = 30
 
 # API request delays
@@ -59,7 +68,10 @@ class Settings:
     and are persisted to settings.json.
     """
 
-    shutdown_on_battery: bool = True
+    settings_version: int = 1
+    """Version number for settings schema, used for migrations."""
+
+    shutdown_on_battery: bool = False
     """Shutdown web server when remote is on battery (not docked)."""
 
     auto_update: bool = False
@@ -77,6 +89,12 @@ class Settings:
     show_beta_releases: bool = False
     """Show pre-release (beta) versions in version selector."""
 
+    sort_by: str = "stars"
+    """Sort available integrations by: 'stars', 'downloads', 'updated', 'created', 'name', or 'original'."""
+
+    sort_reverse: bool = False
+    """Reverse the sort order for available integrations."""
+
     @classmethod
     def load(cls) -> "Settings":
         """Load settings from manager data file or return defaults."""
@@ -87,9 +105,16 @@ class Settings:
                 settings_data = data.get("settings", {})
                 field_names = {f.name for f in fields(cls)}
                 _LOG.info("Loaded settings from %s", MANAGER_DATA_FILE)
-                return cls(
+
+                # Create settings instance
+                settings = cls(
                     **{k: v for k, v in settings_data.items() if k in field_names}
                 )
+
+                # Perform migrations based on settings_version
+                settings._migrate()
+
+                return settings
             except (json.JSONDecodeError, OSError) as e:
                 _LOG.warning(
                     "Failed to load settings from %s: %s", MANAGER_DATA_FILE, e
@@ -99,6 +124,32 @@ class Settings:
                 "Manager data file not found at %s, using defaults", MANAGER_DATA_FILE
             )
         return cls()
+
+    def _migrate(self) -> None:
+        """Migrate settings from older versions to current schema."""
+        current_version = self.settings_version
+        needs_save = False
+
+        # Migration from version 0 (no version field) to version 1
+        if current_version < 1:
+            # If user had the old default (True), migrate to new default (False)
+            # If user explicitly changed it to True, they keep True (we can't distinguish)
+            # If user explicitly changed it to False, they keep False
+            if self.shutdown_on_battery is True:
+                _LOG.info(
+                    "Migrating settings v%d->v1: Changing shutdown_on_battery default from True to False",
+                    current_version,
+                )
+                self.shutdown_on_battery = False
+                needs_save = True
+
+            self.settings_version = 1
+            needs_save = True
+
+        # Save if any migrations were applied
+        if needs_save:
+            self.save()
+            _LOG.info("Settings migrated to version %d", self.settings_version)
 
     def save(self) -> None:
         """Save settings to manager data file."""

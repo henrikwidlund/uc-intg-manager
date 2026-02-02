@@ -12,12 +12,12 @@
             <span class="text-purple-400 flex-shrink-0 truncate text-xs" title="{{ entry.logger }}">{{ entry.logger }}</span>
             
             <!-- Message -->
-            <span class="text-gray-300 break-all">{{ entry.message }}</span>
+            <span class="text-gray-500 break-all">{{ entry.message }}</span>
         </div>
     </div>
     {% endfor %}
 {% else %}
-    <div class="p-8 text-center text-gray-400">
+    <div class="p-8 text-center text-gray-500">
         <i class="fa-regular fa-file-lines w-12 h-12 mx-auto mb-3 opacity-50"></i>
         <p>No log entries yet</p>
     </div>

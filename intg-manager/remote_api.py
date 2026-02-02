@@ -67,7 +67,7 @@ class RemoteAPIClient:
             # Create timeout object explicitly to avoid context manager issues
             # when running from non-async context via run_coroutine_threadsafe
             timeout = aiohttp.ClientTimeout(total=30)
-            
+
             # Create SSL context with certifi certificates for HTTPS support
             ssl_context = ssl.create_default_context(cafile=certifi.where())
             connector = aiohttp.TCPConnector(ssl=ssl_context)
@@ -338,8 +338,15 @@ class RemoteAPIClient:
                                     delete_error,
                                 )
                                 # Continue anyway and try to create the new key
+        except RemoteAPIError as e:
+            _LOG.warning(
+                "Failed to check for existing API keys: %s. Will attempt to create new key anyway.",
+                e,
+            )
+            # Continue to key creation even if we couldn't check for existing keys
 
-            # Now create the new API key
+        # Now create the new API key
+        try:
             response = await self._request(
                 "POST",
                 "/auth/api_keys",

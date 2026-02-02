@@ -7,21 +7,26 @@ Uses the `requests` library instead of aiohttp to avoid async context issues.
 :license: Mozilla Public License Version 2.0, see LICENSE for more details.
 """
 
+import asyncio
+import concurrent.futures
 import json
 import logging
 import os
 import re
-from typing import Any
 from datetime import datetime
-import asyncio
-from ucapi_framework import find_orphaned_entities
+from typing import Any
 
 import certifi
 import requests
+from const import (
+    GITHUB_API_BASE,
+    KNOWN_INTEGRATIONS_URL,
+    REPO_CACHE_VALIDITY,
+    MANAGER_DATA_FILE,
+)
+from packaging.version import InvalidVersion, Version
 from requests.auth import HTTPBasicAuth
-from packaging.version import Version, InvalidVersion
-
-from const import GITHUB_API_BASE, KNOWN_INTEGRATIONS_URL
+from ucapi_framework import find_orphaned_entities
 
 _LOG = logging.getLogger(__name__)
 
@@ -136,6 +141,36 @@ class SyncRemoteClient:
             return False
         except SyncAPIError:
             return False
+
+    def reboot_remote(self) -> bool:
+        """
+        Reboot the remote.
+
+        :return: True if successful
+        :raises SyncAPIError: If reboot command fails
+        """
+        try:
+            self._request("POST", "/system?cmd=REBOOT")
+            _LOG.info("Remote reboot command sent")
+            return True
+        except SyncAPIError as e:
+            _LOG.error("Failed to reboot remote: %s", e)
+            raise
+
+    def power_off_remote(self) -> bool:
+        """
+        Power off the remote.
+
+        :return: True if successful
+        :raises SyncAPIError: If power off command fails
+        """
+        try:
+            self._request("POST", "/system?cmd=POWER_OFF")
+            _LOG.info("Remote power off command sent")
+            return True
+        except SyncAPIError as e:
+            _LOG.error("Failed to power off remote: %s", e)
+            raise
 
     def get_drivers(self) -> list[dict[str, Any]]:
         """Get list of all integration drivers."""
@@ -267,11 +302,108 @@ class SyncRemoteClient:
         :raises SyncAPIError: If the request fails
         """
         try:
-            # Use asyncio.run() which requires no event loop to be running
-            return asyncio.run(self.find_orphan_entities_async())
+            # Check if an event loop is already running
+            try:
+                asyncio.get_running_loop()
+                # If we get here, a loop is running - we need to use a different approach
+
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(
+                        lambda: asyncio.run(self.find_orphan_entities_async())
+                    )
+                    return future.result()
+            except RuntimeError:
+                # No event loop running, safe to use asyncio.run()
+                return asyncio.run(self.find_orphan_entities_async())
         except Exception as e:
             _LOG.error("Failed to get orphan entities: %s", e)
             raise SyncAPIError(f"Failed to get orphan entities: {e}") from e
+
+    def get_ir_remotes(self, page: int = 1, limit: int = 100) -> list[dict[str, Any]]:
+        """
+        Get list of IR remotes.
+
+        :param page: Page number for pagination
+        :param limit: Number of results per page
+        :return: List of IR remote dictionaries
+        :raises SyncAPIError: If the request fails
+        """
+        try:
+            params = {"kind": "IR", "page": page, "limit": limit}
+            result = self._request("GET", "/remotes", params=params)
+            _LOG.debug("Found %d IR remotes", len(result) if result else 0)
+            return result if isinstance(result, list) else []
+        except Exception as e:
+            _LOG.error("Failed to get IR remotes: %s", e)
+            raise SyncAPIError(f"Failed to get IR remotes: {e}") from e
+
+    def get_remote_detail(self, entity_id: str) -> dict[str, Any]:
+        """
+        Get detailed information for a specific remote.
+
+        :param entity_id: The remote entity ID
+        :return: Remote details dictionary
+        :raises SyncAPIError: If the request fails
+        """
+        try:
+            result = self._request("GET", f"/remotes/{entity_id}")
+            _LOG.debug("Retrieved details for remote: %s", entity_id)
+            return result if isinstance(result, dict) else {}
+        except Exception as e:
+            _LOG.error("Failed to get remote detail for %s: %s", entity_id, e)
+            raise SyncAPIError(f"Failed to get remote detail: {e}") from e
+
+    def get_custom_ir_codesets(self) -> list[dict[str, Any]]:
+        """
+        Get list of custom IR codesets.
+
+        :return: List of custom IR codeset dictionaries
+        :raises SyncAPIError: If the request fails
+        """
+        try:
+            result = self._request("GET", "/ir/codes/custom")
+            _LOG.debug("Found %d custom IR codesets", len(result) if result else 0)
+            return result if isinstance(result, list) else []
+        except Exception as e:
+            _LOG.error("Failed to get custom IR codesets: %s", e)
+            raise SyncAPIError(f"Failed to get custom IR codesets: {e}") from e
+
+    def delete_custom_ir_codeset(self, device_id: str) -> bool:
+        """
+        Delete a custom IR codeset.
+
+        :param device_id: The custom IR codeset device ID
+        :return: True if successful
+        :raises SyncAPIError: If deletion fails
+        """
+        try:
+            self._request("DELETE", f"/ir/codes/custom/{device_id}")
+            _LOG.info("Deleted custom IR codeset: %s", device_id)
+            return True
+        except SyncAPIError as e:
+            _LOG.error("Failed to delete custom IR codeset %s: %s", device_id, e)
+            raise
+
+    def create_remote(self, remote_name: str, codeset_id: str) -> dict[str, Any]:
+        """
+        Create a new remote with a custom codeset.
+
+        :param remote_name: Name for the remote
+        :param codeset_id: Custom codeset device ID (e.g., "ir.manufacturer.123")
+        :return: Created remote data
+        :raises SyncAPIError: If creation fails
+        """
+        try:
+            payload = {
+                "name": {"en": remote_name},
+                "codeset_id": codeset_id,
+            }
+            result = self._request("POST", "/remotes", json=payload)
+            _LOG.info("Created remote: %s with codeset: %s", remote_name, codeset_id)
+            return result if isinstance(result, dict) else {}
+        except Exception as e:
+            _LOG.error("Failed to create remote %s: %s", remote_name, e)
+            raise SyncAPIError(f"Failed to create remote: {e}") from e
 
     def delete_instance(self, instance_id: str) -> bool:
         """
@@ -554,6 +686,80 @@ class SyncRemoteClient:
         return self._request("DELETE", f"/entities/{full_entity_id}")
 
 
+def find_orphaned_ir_codesets(api_client: SyncRemoteClient) -> list[dict[str, Any]]:
+    """
+    Find custom IR codesets that are not associated with any remote.
+
+    Only returns items from /ir/codes/custom that do not have a corresponding
+    ir.codeset.id found in any remote from /remotes.
+
+    :param api_client: SyncRemoteClient instance for API calls
+    :return: List of orphaned codesets with device_id and device_name
+    """
+    try:
+        # Get all IR remotes and extract associated codeset IDs
+        associated_codeset_ids = set()
+        page = 1
+        while True:
+            remotes = api_client.get_ir_remotes(page=page, limit=100)
+            if not remotes:
+                break
+
+            for remote in remotes:
+                entity_id = remote.get("entity_id")
+                if entity_id:
+                    # Get remote detail to find ir.codeset.id
+                    detail = api_client.get_remote_detail(entity_id)
+                    ir = detail.get("options", {}).get("ir", {})
+                    ir_codeset = ir.get("codeset")
+
+                    # Check if ir.codeset exists and has an id
+                    if ir_codeset and isinstance(ir_codeset, dict):
+                        codeset_id = ir_codeset.get("id")
+                        if codeset_id:
+                            associated_codeset_ids.add(codeset_id)
+                            _LOG.debug(
+                                "Remote %s has associated codeset: %s",
+                                entity_id,
+                                codeset_id,
+                            )
+
+            # If we got less than limit, we're done
+            if len(remotes) < 100:
+                break
+            page += 1
+
+        _LOG.debug("Found %d associated IR codeset IDs", len(associated_codeset_ids))
+
+        # Get all custom IR codesets
+        all_codesets = api_client.get_custom_ir_codesets()
+        _LOG.debug("Found %d total custom IR codesets", len(all_codesets))
+
+        # Find orphans - codesets not associated with any remote
+        orphaned = []
+        for codeset in all_codesets:
+            device_id = codeset.get("device_id")
+            device_name = codeset.get("device", device_id)
+
+            if device_id and device_id not in associated_codeset_ids:
+                _LOG.debug(
+                    "Orphaned codeset found: %s (ID: %s)", device_name, device_id
+                )
+                orphaned.append(
+                    {
+                        "device_id": device_id,
+                        "device_name": device_name,
+                    }
+                )
+
+        _LOG.info("Found %d orphaned IR codesets", len(orphaned))
+        return orphaned
+
+    except Exception as e:
+        _LOG.error("Failed to find orphaned IR codesets: %s", e)
+        return []
+
+
 class SyncGitHubClient:
     """
     Synchronous client for the GitHub API.
@@ -697,7 +903,7 @@ class SyncGitHubClient:
         self,
         owner: str,
         repo: str,
-        asset_pattern: str = ".tar.gz",
+        asset_pattern: str | None = None,
         version: str | None = None,
     ) -> tuple[bytes, str] | None:
         """
@@ -705,7 +911,8 @@ class SyncGitHubClient:
 
         :param owner: GitHub repository owner
         :param repo: GitHub repository name
-        :param asset_pattern: Pattern to match asset filename (default .tar.gz)
+        :param asset_pattern: Regex pattern to match asset filename. If None, matches first .tar.gz file.
+                              Use for integrations with multiple tar.gz files (e.g., 'aarch64.*\.tar\.gz')
         :param version: Specific version tag to download (e.g., 'v1.0.0'). If None, downloads latest.
         :return: Tuple of (file bytes, filename) or None if not found
         """
@@ -728,13 +935,41 @@ class SyncGitHubClient:
             _LOG.warning("No assets in release for %s/%s", owner, repo)
             return None
 
-        # Find the tar.gz asset
+        # Find the matching asset
         target_asset = None
-        for asset in assets:
-            name = asset.get("name", "")
-            if asset_pattern in name:
-                target_asset = asset
-                break
+
+        if asset_pattern:
+            # Use regex pattern matching
+            try:
+                pattern = re.compile(asset_pattern)
+                for asset in assets:
+                    name = asset.get("name", "")
+                    if pattern.search(name):
+                        target_asset = asset
+                        _LOG.debug(
+                            "Matched asset '%s' using pattern '%s' for %s/%s",
+                            name,
+                            asset_pattern,
+                            owner,
+                            repo,
+                        )
+                        break
+            except re.error as e:
+                _LOG.error(
+                    "Invalid regex pattern '%s' for %s/%s: %s",
+                    asset_pattern,
+                    owner,
+                    repo,
+                    e,
+                )
+                return None
+        else:
+            # Default: find first .tar.gz file
+            for asset in assets:
+                name = asset.get("name", "")
+                if ".tar.gz" in name:
+                    target_asset = asset
+                    break
 
         if not target_asset:
             _LOG.warning(
@@ -809,6 +1044,58 @@ class SyncGitHubClient:
         except requests.RequestException:
             return None
 
+    def get_repository_info(self, owner: str, repo: str) -> dict[str, Any] | None:
+        """
+        Get repository information including stars, forks, and dates.
+
+        :param owner: Repository owner
+        :param repo: Repository name
+        :return: Repository data or None if not found
+        """
+        url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}"
+
+        try:
+            response = self._session.get(url, timeout=REQUEST_TIMEOUT)
+
+            # Check for rate limiting
+            rate_limit_remaining = response.headers.get("X-RateLimit-Remaining")
+            if response.status_code == 403 and rate_limit_remaining == "0":
+                rate_limit_reset = response.headers.get("X-RateLimit-Reset")
+                reset_time = (
+                    datetime.fromtimestamp(int(rate_limit_reset))
+                    if rate_limit_reset
+                    else None
+                )
+                reset_str = (
+                    reset_time.strftime("%Y-%m-%d %H:%M:%S")
+                    if reset_time
+                    else "unknown"
+                )
+                _LOG.warning(
+                    "GitHub API rate limit exceeded for %s/%s. Reset at: %s",
+                    owner,
+                    repo,
+                    reset_str,
+                )
+                return None
+
+            if response.status_code == 200:
+                data = response.json()
+                # Extract only the fields we need
+                return {
+                    "stargazers_count": data.get("stargazers_count", 0),
+                    "forks_count": data.get("forks_count", 0),
+                    "watchers_count": data.get("watchers_count", 0),
+                    "created_at": data.get("created_at", ""),
+                    "updated_at": data.get("updated_at", ""),
+                    "pushed_at": data.get("pushed_at", ""),
+                    "open_issues_count": data.get("open_issues_count", 0),
+                }
+            return None
+        except requests.RequestException as e:
+            _LOG.warning("Failed to get repository info for %s/%s: %s", owner, repo, e)
+            return None
+
     @staticmethod
     def compare_versions(current: str, latest: str) -> bool:
         """Check if latest version is newer than current."""
@@ -819,6 +1106,110 @@ class SyncGitHubClient:
             return Version(latest_clean) > Version(current_clean)
         except (InvalidVersion, TypeError, AttributeError):
             return False
+
+
+def load_repo_cache() -> dict[str, Any]:
+    """
+    Load repository cache from manager.json.
+
+    Cache structure (stored in manager.json under "repo_cache" key):
+    {
+        "last_batch_time": timestamp,
+        "repos": {
+            "owner/repo": {
+                "cached_at": timestamp,
+                "data": {...repo_info...}
+            }
+        }
+    }
+
+    :return: Cache dictionary with last_batch_time and repos
+    """
+
+    if not os.path.exists(MANAGER_DATA_FILE):
+        return {"last_batch_time": 0, "repos": {}}
+
+    try:
+        with open(MANAGER_DATA_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            cache = data.get("repo_cache", {})
+            # Ensure proper structure
+            if "repos" not in cache:
+                return {
+                    "last_batch_time": 0,
+                    "repos": cache if isinstance(cache, dict) else {},
+                }
+            return cache
+    except (OSError, json.JSONDecodeError) as e:
+        _LOG.warning("Failed to load repo cache: %s", e)
+        return {"last_batch_time": 0, "repos": {}}
+
+
+def save_repo_cache(cache: dict[str, Any]) -> None:
+    """
+    Save repository cache to manager.json.
+
+    :param cache: Cache dictionary with last_batch_time and repos
+    """
+
+    try:
+        os.makedirs(os.path.dirname(MANAGER_DATA_FILE), exist_ok=True)
+
+        # Load existing data to preserve other sections
+        existing_data = {}
+        if os.path.exists(MANAGER_DATA_FILE):
+            try:
+                with open(MANAGER_DATA_FILE, "r", encoding="utf-8") as f:
+                    existing_data = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        # Update repo_cache section
+        existing_data["repo_cache"] = cache
+
+        with open(MANAGER_DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(existing_data, f, indent=2)
+    except OSError as e:
+        _LOG.warning("Failed to save repo cache: %s", e)
+
+
+def get_cached_repo_info(
+    owner: str, repo: str, github_client: "SyncGitHubClient"
+) -> dict[str, Any]:
+    """
+    Get repository info from cache or add to fetch queue.
+
+    This function implements rate-limiting by only fetching REPO_FETCH_BATCH_SIZE
+    repositories per REPO_FETCH_BATCH_INTERVAL. If a repo needs updating but
+    we've hit the batch limit, it returns the expired cache (or empty dict).
+
+    :param owner: Repository owner
+    :param repo: Repository name
+    :param github_client: GitHub client instance
+    :return: Repository info dict (stars, dates, etc.) or empty dict if unavailable
+    """
+    cache = load_repo_cache()
+    repos = cache.get("repos", {})
+    cache_key = f"{owner}/{repo}"
+    now = datetime.now().timestamp()
+
+    # Check if we have valid cached data
+    if cache_key in repos:
+        cached_entry = repos[cache_key]
+        cached_time = cached_entry.get("cached_at", 0)
+        if now - cached_time < REPO_CACHE_VALIDITY:
+            _LOG.debug("Using cached repo info for %s", cache_key)
+            return cached_entry.get("data", {})
+
+    # No valid cache - return expired cache if available, or empty dict
+    # Background batching in web_server.py will populate this over time
+    if cache_key in repos:
+        _LOG.debug("Using expired cache for %s (will refresh in background)", cache_key)
+        return repos[cache_key].get("data", {})
+        return repos[cache_key].get("data", {})
+
+    _LOG.debug("No cache for %s, waiting for next batch window", cache_key)
+    return {}
 
 
 def load_registry() -> list[dict[str, Any]]:

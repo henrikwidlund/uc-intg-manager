@@ -45,10 +45,27 @@ from backup_service import (
     backup_all_integrations,
     get_backup,
 )
-from const import WEB_SERVER_PORT, Settings, API_DELAY, MANAGER_DATA_FILE
+from const import (
+    WEB_SERVER_PORT,
+    Settings,
+    API_DELAY,
+    MANAGER_DATA_FILE,
+    REPO_CACHE_VALIDITY,
+    REPO_FETCH_BATCH_INTERVAL,
+    REPO_FETCH_BATCH_SIZE,
+)
 from log_handler import get_log_entries, get_log_handler
 from migration_service import extract_migration_mappings
-from sync_api import SyncRemoteClient, SyncGitHubClient, load_registry, SyncAPIError
+from sync_api import (
+    SyncRemoteClient,
+    SyncGitHubClient,
+    load_repo_cache,
+    load_registry,
+    SyncAPIError,
+    find_orphaned_ir_codesets,
+    get_cached_repo_info,
+    save_repo_cache,
+)
 from packaging.version import Version, InvalidVersion
 
 _LOG = logging.getLogger(__name__)
@@ -187,6 +204,12 @@ class AvailableIntegration:
     can_update: bool = False  # Show update button (always true if update available for custom integrations)
     can_auto_update: bool = False  # Can do automated backup/restore (requires supports_backup and min version)
     supports_backup: bool = False  # Uses ucapi-framework with backup support
+    # Repository stats (from GitHub API)
+    stars: int = 0
+    created_at: str = ""
+    pushed_at: str = ""
+    downloads: int = 0
+    original_index: int = 0  # Original position in registry
 
     @property
     def install_status(self) -> str:
@@ -280,10 +303,18 @@ def _refresh_version_cache() -> None:
                     has_update = SyncGitHubClient.compare_versions(
                         current_version, latest_version
                     )
+
+                    # Calculate total downloads from all release assets
+                    total_downloads = 0
+                    assets = release.get("assets", [])
+                    for asset in assets:
+                        total_downloads += asset.get("download_count", 0)
+
                     version_updates[integration.driver_id] = {
                         "current": current_version,
                         "latest": latest_version,
                         "has_update": has_update,
+                        "downloads": total_downloads,
                     }
 
                     # Send notification for update available
@@ -509,7 +540,6 @@ def _get_installed_integrations() -> list[IntegrationInfo]:
             _LOG.info("Integration %s in problem state: %s", info.name, info.state)
             try:
                 nm = get_notification_manager()
-                _LOG.debug("Sending notification for error state: %s", info.name)
                 send_notification_sync(
                     nm.notify_integration_error_state, driver_id, info.name, info.state
                 )
@@ -761,6 +791,29 @@ def _get_available_integrations() -> list[AvailableIntegration]:
                             # If version parsing fails, allow auto update if supports_backup
                             pass
 
+        # Fetch repository stats from GitHub (cached)
+        stars = 0
+        created_at = ""
+        pushed_at = ""
+        downloads = 0
+
+        if _github_client and home_page and "github.com" in home_page:
+            try:
+                parsed = SyncGitHubClient.parse_github_url(home_page)
+                if parsed:
+                    owner, repo = parsed
+                    repo_info = get_cached_repo_info(owner, repo, _github_client)
+                    if repo_info:
+                        stars = repo_info.get("stargazers_count", 0)
+                        created_at = repo_info.get("created_at", "")
+                        pushed_at = repo_info.get("pushed_at", "")
+            except Exception as e:
+                _LOG.debug("Failed to get repo info for %s: %s", name, e)
+
+        # Get download count from version cache (populated during version checks)
+        if actual_driver_id and actual_driver_id in _cached_version_data:
+            downloads = _cached_version_data[actual_driver_id].get("downloads", 0)
+
         categories_list = item.get("categories", [])
         avail = AvailableIntegration(
             driver_id=actual_driver_id if actual_driver_id else driver_id,
@@ -783,8 +836,30 @@ def _get_available_integrations() -> list[AvailableIntegration]:
             can_update=can_update,
             can_auto_update=can_auto_update,
             supports_backup=supports_backup,
+            stars=stars,
+            created_at=created_at,
+            pushed_at=pushed_at,
+            downloads=downloads,
+            original_index=len(available),
         )
         available.append(avail)
+
+    # Apply sorting based on settings
+    settings = Settings.load()
+    sort_by = settings.sort_by
+    sort_reverse = settings.sort_reverse
+
+    if sort_by == "stars":
+        available.sort(key=lambda x: x.stars, reverse=not sort_reverse)
+    elif sort_by == "created":
+        available.sort(key=lambda x: x.created_at or "", reverse=not sort_reverse)
+    elif sort_by == "updated":
+        available.sort(key=lambda x: x.pushed_at or "", reverse=not sort_reverse)
+    elif sort_by == "name":
+        available.sort(key=lambda x: x.name.lower(), reverse=sort_reverse)
+    elif sort_by == "downloads":
+        available.sort(key=lambda x: x.downloads, reverse=not sort_reverse)
+    # "original" or any other value = keep original registry order (no sorting needed)
 
     # Check for new integrations in registry and send notification
     try:
@@ -942,7 +1017,9 @@ def get_updates_count():
 def get_integrations_list():
     """Get HTML partial with list of installed integrations."""
     if not _remote_client:
-        return "<div class='text-red-500'>Service not initialized</div>"
+        return (
+            "<div class='text-red-600 dark:text-red-400'>Service not initialized</div>"
+        )
 
     try:
         integrations = _get_installed_integrations()
@@ -965,7 +1042,7 @@ def get_integrations_list():
         )
     except Exception as e:
         _LOG.error("Failed to get integrations: %s", e)
-        return f"<div class='text-red-500'>Error: {e}</div>"
+        return f"<div class='text-red-600 dark:text-red-400'>Error: {e}</div>"
 
 
 @app.route("/api/integrations/available")
@@ -981,7 +1058,7 @@ def get_available_list():
         )
     except Exception as e:
         _LOG.error("Failed to get available integrations: %s", e)
-        return f"<div class='text-red-500'>Error: {e}</div>"
+        return f"<div class='text-red-600 dark:text-red-400'>Error: {e}</div>"
 
 
 @app.route("/api/integrations/refresh-versions", methods=["POST"])
@@ -1003,7 +1080,9 @@ def refresh_versions():
 def get_integration_detail(instance_id: str):
     """Get HTML partial with integration details."""
     if not _remote_client:
-        return "<div class='text-red-500'>Service not initialized</div>"
+        return (
+            "<div class='text-red-600 dark:text-red-400'>Service not initialized</div>"
+        )
 
     try:
         # Find the integration in the list
@@ -1015,10 +1094,10 @@ def get_integration_detail(instance_id: str):
             return render_template(
                 "partials/integration_detail.html", integration=integration
             )
-        return "<div class='text-yellow-500'>Integration not found</div>"
+        return "<div class='text-yellow-700 dark:text-yellow-400'>Integration not found</div>"
     except Exception as e:
         _LOG.error("Failed to get integration detail: %s", e)
-        return f"<div class='text-red-500'>Error: {e}</div>"
+        return f"<div class='text-red-600 dark:text-red-400'>Error: {e}</div>"
 
 
 @app.route("/api/integration/<instance_id>/update", methods=["POST"])
@@ -1351,19 +1430,33 @@ def _perform_update_integration(
 
         owner, repo = parsed
 
+        # Check if registry has an asset_pattern for this integration
+        registry = load_registry()
+        asset_pattern = next(
+            (
+                item.get("asset_pattern")
+                for item in registry
+                if item.get("driver_id") == integration.driver_id
+                or item.get("id") == integration.driver_id
+            ),
+            None,
+        )
+
         # Download the specified or latest release
         if version:
             _LOG.info(
                 "Updating integration %s to version %s", integration.driver_id, version
             )
             download_result = _github_client.download_release_asset(
-                owner, repo, version=version
+                owner, repo, asset_pattern=asset_pattern, version=version
             )
         else:
             _LOG.info(
                 "Updating integration %s to latest version", integration.driver_id
             )
-            download_result = _github_client.download_release_asset(owner, repo)
+            download_result = _github_client.download_release_asset(
+                owner, repo, asset_pattern=asset_pattern
+            )
         if not download_result:
             with _operation_lock:
                 _operation_in_progress = False
@@ -2304,15 +2397,28 @@ def update_driver(driver_id: str):
 
         owner, repo = parsed
 
+        # Check if registry has an asset_pattern for this integration
+        registry = load_registry()
+        asset_pattern = next(
+            (
+                item.get("asset_pattern")
+                for item in registry
+                if item.get("driver_id") == driver_id or item.get("id") == driver_id
+            ),
+            None,
+        )
+
         # Download the specified or latest release
         if version:
             _LOG.info("Updating driver %s to version %s", driver_id, version)
             download_result = _github_client.download_release_asset(
-                owner, repo, version=version
+                owner, repo, asset_pattern=asset_pattern, version=version
             )
         else:
             _LOG.info("Updating driver %s to latest version", driver_id)
-            download_result = _github_client.download_release_asset(owner, repo)
+            download_result = _github_client.download_release_asset(
+                owner, repo, asset_pattern=asset_pattern
+            )
         if not download_result:
             with _operation_lock:
                 _operation_in_progress = False
@@ -2541,7 +2647,7 @@ def get_update_confirmation(driver_id: str):
     Returns HTML warning that configuration cannot be preserved.
     """
     if not _remote_client:
-        return "<p class='text-red-400'>Service not initialized</p>"
+        return "<p class='text-red-600 dark:text-red-400'>Service not initialized</p>"
 
     try:
         # Get integration details
@@ -2549,7 +2655,7 @@ def get_update_confirmation(driver_id: str):
         integration = next((i for i in integrations if i.driver_id == driver_id), None)
 
         if not integration:
-            return "<p class='text-red-400'>Integration not found</p>"
+            return "<p class='text-red-600 dark:text-red-400'>Integration not found</p>"
 
         # Load registry to check backup requirements
         registry = load_registry()
@@ -2595,7 +2701,7 @@ def get_update_confirmation(driver_id: str):
         )
     except Exception as e:
         _LOG.error("Error loading update confirmation for %s: %s", driver_id, e)
-        return f"<p class='text-red-400'>Error: {str(e)}</p>"
+        return f"<p class='text-red-600 dark:text-red-400'>Error: {str(e)}</p>"
 
 
 @app.route("/api/integration/<driver_id>/delete-confirm")
@@ -2606,7 +2712,7 @@ def get_delete_confirmation(driver_id: str):
     Returns HTML to be displayed in the modal with delete options.
     """
     if not _remote_client:
-        return "<p class='text-red-400'>Service not initialized</p>"
+        return "<p class='text-red-600 dark:text-red-400'>Service not initialized</p>"
 
     try:
         # Get integration name for display
@@ -2641,7 +2747,7 @@ def get_delete_confirmation(driver_id: str):
         )
     except Exception as e:
         _LOG.error("Error loading delete confirmation for %s: %s", driver_id, e)
-        return f"<p class='text-red-400'>Error: {str(e)}</p>"
+        return f"<p class='text-red-600 dark:text-red-400'>Error: {str(e)}</p>"
 
 
 @app.route("/api/integration/<driver_id>/delete", methods=["DELETE"])
@@ -2912,15 +3018,28 @@ def install_integration(driver_id: str):
 
         owner, repo = parsed
 
+        # Check if registry has an asset_pattern for this integration
+        registry = load_registry()
+        asset_pattern = next(
+            (
+                item.get("asset_pattern")
+                for item in registry
+                if item.get("driver_id") == driver_id or item.get("id") == driver_id
+            ),
+            None,
+        )
+
         # Download the specified or latest release
         if version:
             _LOG.info("Installing %s version %s", driver_id, version)
             download_result = _github_client.download_release_asset(
-                owner, repo, version=version
+                owner, repo, asset_pattern=asset_pattern, version=version
             )
         else:
             _LOG.info("Installing latest version of %s", driver_id)
-            download_result = _github_client.download_release_asset(owner, repo)
+            download_result = _github_client.download_release_asset(
+                owner, repo, asset_pattern=asset_pattern
+            )
         if not download_result:
             with _operation_lock:
                 _operation_in_progress = False
@@ -3497,24 +3616,24 @@ def get_status():
 def get_status_html():
     """Get current system status as HTML badges."""
     if not _remote_client:
-        return '<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-500/20 text-red-300">Not Connected</span>'
+        return '<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-600 dark:bg-red-500/20 text-white dark:text-red-300">Not Connected</span>'
 
     try:
         is_docked = _remote_client.is_docked()
         docked_badge = (
-            '<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-500/20 text-green-300">'
+            '<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-700 dark:bg-green-500/20 text-white dark:text-green-300">'
             '<i class="fa-regular fa-charging-station mr-1.5"></i>Docked</span>'
             if is_docked
-            else '<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-500/20 text-yellow-300">'
+            else '<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-700 dark:bg-yellow-500/20 text-white dark:text-yellow-300">'
             '<i class="fa-regular fa-battery-half mr-1.5"></i>On Battery</span>'
         )
         server_badge = (
-            '<span class="hidden sm:inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-500/20 text-green-300">'
-            '<span class="w-1.5 h-1.5 mr-1.5 bg-green-400 rounded-full animate-pulse"></span>Running</span>'
+            '<span class="hidden sm:inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-700 dark:bg-green-500/20 text-white dark:text-green-300">'
+            '<span class="w-1.5 h-1.5 mr-1.5 bg-white dark:bg-green-400 rounded-full animate-pulse"></span>Running</span>'
         )
         return f"{docked_badge} {server_badge}"
     except Exception as e:
-        return f'<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-500/20 text-red-300">Error: {e}</span>'
+        return f'<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-600 dark:bg-red-500/20 text-white dark:text-red-300">Error: {e}</span>'
 
 
 # =============================================================================
@@ -3583,6 +3702,37 @@ def get_settings():
     """Get current settings as JSON."""
     settings = Settings.load()
     return jsonify(settings.to_dict())
+
+
+@app.route("/api/settings/sort", methods=["GET"])
+def get_sort_settings():
+    """Get current sort settings as JSON."""
+    settings = Settings.load()
+    return jsonify({"sort_by": settings.sort_by, "sort_reverse": settings.sort_reverse})
+
+
+@app.route("/api/settings/sort", methods=["POST"])
+def update_sort_settings():
+    """Update sort settings and return refreshed available integrations list."""
+    try:
+        settings = Settings.load()
+        settings.sort_by = request.form.get("sort_by", "stars")
+        # Convert string 'true'/'false' to boolean
+        sort_reverse_str = request.form.get("sort_reverse", "false")
+        settings.sort_reverse = sort_reverse_str == "true"
+        settings.save()
+
+        # Return refreshed available integrations with new sort
+        available = _get_available_integrations()
+        remote_ip = _remote_client._address if _remote_client else None
+        return render_template(
+            "partials/available_list.html",
+            integrations=available,
+            remote_ip=remote_ip,
+        )
+    except Exception as e:
+        _LOG.error("Failed to update sort settings: %s", e)
+        return f"<div class='text-red-600 dark:text-red-400'>Error: {e}</div>", 500
 
 
 # ============================================================================
@@ -4154,19 +4304,24 @@ def inject_system_messages_count():
 
 @app.context_processor
 def inject_orphaned_entities_count():
-    """Inject orphaned entities count into all templates."""
+    """Inject orphaned entities and IR codesets count into all templates."""
     if not _remote_client:
         return {"orphaned_entities_count": 0}
-    
+
     try:
+        # Count orphaned entities by activity
         orphaned_entities = _remote_client.find_orphan_entities()
-        # Group by activity to get unique count
         activity_ids = set()
         for entity in orphaned_entities:
             activity_id = entity.get("activity_id")
             if activity_id:
                 activity_ids.add(activity_id)
-        return {"orphaned_entities_count": len(activity_ids)}
+
+        orphaned_codesets = find_orphaned_ir_codesets(_remote_client)
+
+        # Total count is activities + IR codesets
+        total_count = len(activity_ids) + len(orphaned_codesets)
+        return {"orphaned_entities_count": total_count}
     except Exception as e:
         _LOG.debug("Failed to get orphaned entities count: %s", e)
         return {"orphaned_entities_count": 0}
@@ -4177,16 +4332,16 @@ def system_messages_page():
     """Render the system messages page and mark displayed messages as read."""
     try:
         messages_service = get_system_messages_service()
-        
+
         # Get unread and read messages
         unread_messages = messages_service.get_unread_messages()
         read_messages = messages_service.get_read_messages()
-        
+
         # Mark all currently displayed unread messages as read
         if unread_messages:
             message_ids = [msg.id for msg in unread_messages]
             messages_service.mark_messages_as_read(message_ids)
-        
+
         return render_template(
             "system_messages.html",
             unread_messages=unread_messages,
@@ -4207,15 +4362,19 @@ def refresh_system_messages():
     try:
         messages_service = get_system_messages_service()
         success = messages_service.fetch_from_github()
-        
+
         if success:
             _LOG.info("System messages refreshed from GitHub")
             # Return success response that triggers page reload
-            return jsonify({"success": True, "message": "Messages refreshed successfully"})
+            return jsonify(
+                {"success": True, "message": "Messages refreshed successfully"}
+            )
         else:
             _LOG.warning("Failed to refresh system messages from GitHub")
-            return jsonify({"success": False, "message": "Failed to fetch from GitHub"}), 500
-            
+            return jsonify(
+                {"success": False, "message": "Failed to fetch from GitHub"}
+            ), 500
+
     except Exception as e:
         _LOG.error("Error refreshing system messages: %s", e)
         return jsonify({"success": False, "message": str(e)}), 500
@@ -4282,16 +4441,135 @@ def get_orphaned_entities():
         _LOG.error("Failed to fetch orphaned entities: %s", e)
         # Return error message
         return f"""
-        <div class="bg-red-900/20 border border-red-500/30 rounded-lg p-6">
+        <div class="bg-red-50 dark:bg-red-900/20 border border-red-400 dark:border-red-500/30 rounded-lg p-6">
             <div class="flex items-start gap-3">
-                <i class="fa-solid fa-triangle-exclamation text-red-400 text-xl"></i>
+                <i class="fa-solid fa-triangle-exclamation text-red-600 dark:text-red-400 text-xl"></i>
                 <div>
-                    <h3 class="text-white font-medium mb-1">Error Loading Diagnostics</h3>
-                    <p class="text-sm text-gray-300">{e}</p>
+                    <h3 class="text-gray-900 dark:text-white font-medium mb-1">Error Loading Diagnostics</h3>
+                    <p class="text-sm text-gray-700 dark:text-gray-300">{e}</p>
                 </div>
             </div>
         </div>
         """
+
+
+@app.route("/api/diagnostics/orphaned-ir-codesets")
+def get_orphaned_ir_codesets():
+    """Get orphaned IR codesets data as HTML partial for HTMX."""
+    if not _remote_client:
+        return render_template(
+            "partials/orphaned_ir_codesets.html",
+            orphaned_codesets=[],
+        )
+
+    try:
+        orphaned_codesets = find_orphaned_ir_codesets(_remote_client)
+        _LOG.debug("Found %d orphaned IR codesets", len(orphaned_codesets))
+
+        return render_template(
+            "partials/orphaned_ir_codesets.html",
+            orphaned_codesets=orphaned_codesets,
+        )
+    except SyncAPIError as e:
+        _LOG.error("Failed to fetch orphaned IR codesets: %s", e)
+        return f"""
+        <div class="bg-red-50 dark:bg-red-900/20 border border-red-400 dark:border-red-500/30 rounded-lg p-6">
+            <div class="flex items-start gap-3">
+                <i class="fa-solid fa-triangle-exclamation text-red-600 dark:text-red-400 text-xl"></i>
+                <div>
+                    <h3 class="text-gray-900 dark:text-white font-medium mb-1">Error Loading IR Codesets</h3>
+                    <p class="text-sm text-gray-700 dark:text-gray-300">{e}</p>
+                </div>
+            </div>
+        </div>
+        """
+
+
+@app.route("/api/ir/codesets/<device_id>/delete-confirm")
+def ir_codeset_delete_confirm(device_id: str):
+    """Render delete confirmation modal for IR codeset."""
+    # Get codeset info from query params or find it
+    device_name = request.args.get("device_name", device_id)
+
+    return render_template(
+        "partials/modal_delete_ir_codeset.html",
+        device_id=device_id,
+        device_name=device_name,
+    )
+
+
+@app.route("/api/ir/codesets/<device_id>", methods=["DELETE"])
+def delete_ir_codeset(device_id: str):
+    """Delete a custom IR codeset."""
+    if not _remote_client:
+        return jsonify({"error": "Not connected to remote"}), 500
+
+    try:
+        _remote_client.delete_custom_ir_codeset(device_id)
+        _LOG.info("Deleted IR codeset: %s", device_id)
+        # Return empty response to remove the element from DOM
+        return "", 200
+    except SyncAPIError as e:
+        _LOG.error("Failed to delete IR codeset %s: %s", device_id, e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/ir/codesets/reassociate", methods=["POST"])
+def reassociate_ir_codeset():
+    """Create a new remote associated with a custom IR codeset."""
+    if not _remote_client:
+        return jsonify({"error": "Not connected to remote"}), 500
+
+    try:
+        # Handle both JSON and form data
+        if request.is_json:
+            data = request.get_json()
+        else:
+            data = request.form.to_dict()
+
+        device_id = data.get("device_id")
+        remote_name = data.get("remote_name")
+
+        if not device_id or not remote_name:
+            return jsonify({"error": "Missing device_id or remote_name"}), 400
+
+        # Create remote with custom codeset ID
+        _remote_client.create_remote(remote_name, device_id)
+
+        _LOG.info("Created remote '%s' for codeset %s", remote_name, device_id)
+        # Return empty response to remove the element from DOM
+        return "", 200
+    except SyncAPIError as e:
+        _LOG.error("Failed to reassociate IR codeset: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/system/reboot", methods=["POST"])
+def system_reboot():
+    """Reboot the remote."""
+    if not _remote_client:
+        return jsonify({"error": "Not connected to remote"}), 500
+
+    try:
+        _remote_client.reboot_remote()
+        return jsonify({"success": True, "message": "Reboot command sent"}), 200
+    except SyncAPIError as e:
+        _LOG.error("Failed to reboot remote: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/system/power-off", methods=["POST"])
+def system_power_off():
+    """Power off the remote."""
+    if not _remote_client:
+        return jsonify({"error": "Not connected to remote"}), 500
+
+    try:
+        _remote_client.power_off_remote()
+        return jsonify({"success": True, "message": "Power off command sent"}), 200
+    except SyncAPIError as e:
+        _LOG.error("Failed to power off remote: %s", e)
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/backups/create", methods=["POST"])
@@ -4299,7 +4577,7 @@ def create_backup_now():
     """Create a backup of all integration configs that support backup."""
     try:
         if not _remote_client:
-            return """<div class="text-red-400">Not connected to remote</div>"""
+            return """<div class="text-red-600 dark:text-red-400">Not connected to remote</div>"""
 
         # Load registry to check which integrations support backup
         registry = load_registry()
@@ -4348,25 +4626,25 @@ def create_backup_now():
         result_parts = []
         if backed_up:
             result_parts.append(
-                f"<span class='text-green-400'>✓ Backed up: {', '.join(backed_up)}</span>"
+                f"<span class='text-green-600 dark:text-green-400'>✓ Backed up: {', '.join(backed_up)}</span>"
             )
         if skipped:
             result_parts.append(
-                f"<span class='text-gray-400'>Skipped (no backup support): {len(skipped)}</span>"
+                f"<span class='text-gray-600 dark:text-gray-400'>Skipped (integration does not support backup): {len(skipped)}</span>"
             )
         if failed:
             result_parts.append(
-                f"<span class='text-red-400'>✗ Failed: {', '.join(failed)}</span>"
+                f"<span class='text-red-600 dark:text-red-400'>✗ Failed: {', '.join(failed)}</span>"
             )
 
         if not result_parts:
-            return """<div class="text-gray-400">No integrations to backup</div>"""
+            return """<div class="text-gray-600 dark:text-gray-400">No integrations to backup</div>"""
 
         return f"""<div class="space-y-1">{"<br>".join(result_parts)}</div>"""
 
     except Exception as e:
         _LOG.error("Failed to create backup: %s", e)
-        return f"""<div class="text-red-400">Error creating backup: {e}</div>"""
+        return f"""<div class="text-red-600 dark:text-red-400">Error creating backup: {e}</div>"""
 
 
 @app.route("/api/backups/list")
@@ -4377,7 +4655,9 @@ def list_backups():
         backups = backups_data.get("integrations", {})
 
         if not backups:
-            return "<div class='text-gray-400'>No backups found</div>"
+            return (
+                "<div class='text-gray-600 dark:text-gray-400'>No backups found</div>"
+            )
 
         html = "<div class='space-y-2'>"
         for driver_id, backup_info in backups.items():
@@ -4390,16 +4670,16 @@ def list_backups():
                 formatted_time = timestamp
 
             html += f"""
-            <div class="flex items-center justify-between p-3 bg-gray-700/50 rounded-lg hover:bg-gray-700">
+            <div class="flex items-center justify-between p-3 bg-uc-light-card dark:bg-gray-700/50 rounded-lg border border-uc-light-border dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-700">
                 <button class="flex-1 text-left"
                         hx-get="/api/backups/{driver_id}/view"
                         hx-target="#backup-content"
                         hx-swap="innerHTML"
                         title="View backup data">
-                    <div class="text-white font-mono text-sm">{driver_id}</div>
-                    <div class="text-xs text-gray-400">{formatted_time}</div>
+                    <div class="text-gray-900 dark:text-white font-mono text-sm">{driver_id}</div>
+                    <div class="text-xs text-gray-600 dark:text-gray-400">{formatted_time}</div>
                 </button>
-                <button class="text-red-400 hover:text-red-300 text-sm ml-3"
+                <button class="text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 text-sm ml-3"
                         hx-get="/api/backups/{driver_id}/delete-confirm"
                         hx-target="#modal-content"
                         hx-swap="innerHTML"
@@ -4413,7 +4693,7 @@ def list_backups():
 
     except Exception as e:
         _LOG.error("Failed to list backups: %s", e)
-        return f"<div class='text-red-400'>Error: {e}</div>"
+        return f"<div class='text-red-600 dark:text-red-400'>Error: {e}</div>"
 
 
 @app.route("/api/backups/<driver_id>/delete-confirm")
@@ -4452,7 +4732,7 @@ def view_backup(driver_id: str):
         backup_data = get_backup(driver_id)
 
         if not backup_data:
-            return "<div class='text-gray-400'>No backup data found</div>"
+            return "<div class='text-gray-600 dark:text-gray-400'>No backup data found</div>"
 
         # Pretty-print JSON data
         try:
@@ -4462,20 +4742,20 @@ def view_backup(driver_id: str):
             formatted_data = backup_data
 
         return f"""
-        <div class="mt-4 p-4 bg-gray-900 rounded-lg">
+        <div class="mt-4 p-4 bg-uc-light-card dark:bg-gray-900 rounded-lg border border-uc-light-border dark:border-gray-700">
             <div class="flex items-center justify-between mb-3">
-                <h4 class="text-sm font-medium text-white">Backup Data for {driver_id}</h4>
-                <button class="text-gray-400 hover:text-white text-sm"
+                <h4 class="text-sm font-medium text-gray-900 dark:text-white">Backup Data for {driver_id}</h4>
+                <button class="text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white text-sm"
                         onclick="this.parentElement.parentElement.style.display='none'">
                     ✕ Close
                 </button>
             </div>
-            <pre class="text-xs text-gray-300 overflow-auto max-h-96 whitespace-pre-wrap"><code>{formatted_data}</code></pre>
+            <pre class="text-xs text-gray-900 dark:text-gray-300 overflow-auto max-h-96 whitespace-pre-wrap"><code>{formatted_data}</code></pre>
         </div>
         """
     except Exception as e:
         _LOG.error("Failed to view backup: %s", e)
-        return f"<div class='text-red-400'>Error: {e}</div>"
+        return f"<div class='text-red-600 dark:text-red-400'>Error: {e}</div>"
 
 
 @app.route("/api/backups/<driver_id>", methods=["DELETE"])
@@ -4486,7 +4766,7 @@ def delete_backup_entry(driver_id: str):
         return list_backups()  # Return updated list
     except Exception as e:
         _LOG.error("Failed to delete backup: %s", e)
-        return f"<div class='text-red-400'>Error: {e}</div>"
+        return f"<div class='text-red-600 dark:text-red-400'>Error: {e}</div>"
 
 
 @app.route("/api/backups/download")
@@ -4788,6 +5068,132 @@ class WebServer:
         except Exception as e:
             _LOG.warning("Failed to check for new integrations: %s", e)
 
+    def fetch_repository_batch(self) -> None:
+        """
+        Fetch a batch of repository data from GitHub if batch window is open.
+
+        This is called periodically (e.g., during polling) to gradually populate
+        the repository cache without overwhelming GitHub's API rate limits.
+        Only fetches if the 1-hour batch interval has elapsed.
+        """
+        _LOG.debug("fetch_repository_batch: Called (runs every 15 minutes)")
+
+        if not _github_client:
+            _LOG.warning(
+                "fetch_repository_batch: GitHub client not initialized, skipping"
+            )
+            return
+
+        try:
+            cache = load_repo_cache()
+            last_batch_time = cache.get("last_batch_time", 0)
+            now = datetime.now().timestamp()
+
+            # Check if we can start a new batch (1 hour has passed)
+            can_fetch_batch = (now - last_batch_time) >= REPO_FETCH_BATCH_INTERVAL
+
+            if not can_fetch_batch:
+                time_until_next = REPO_FETCH_BATCH_INTERVAL - (now - last_batch_time)
+                _LOG.debug(
+                    "Repository batch fetch: waiting %.1f minutes until next batch window (last batch: %.1f min ago)",
+                    time_until_next / 60,
+                    (now - last_batch_time) / 60,
+                )
+                return
+
+            _LOG.info(
+                "Repository batch fetch: Batch window open, checking for repos to update"
+            )
+
+            # Get list of all integrations from registry
+            registry = load_registry()
+            repos_cache = cache.get("repos", {})
+            repos_to_fetch = []
+
+            # Collect repos that need updating (expired or missing)
+            for item in registry:
+                home_page = item.get("repository", "")
+                if home_page and "github.com" in home_page:
+                    parsed = SyncGitHubClient.parse_github_url(home_page)
+                    if parsed:
+                        owner, repo = parsed
+                        cache_key = f"{owner}/{repo}"
+
+                        # Check if missing or expired
+                        if cache_key not in repos_cache:
+                            repos_to_fetch.append((owner, repo, cache_key))
+                        else:
+                            cached_time = repos_cache[cache_key].get("cached_at", 0)
+                            if now - cached_time >= REPO_CACHE_VALIDITY:
+                                repos_to_fetch.append((owner, repo, cache_key))
+
+            _LOG.info(
+                "Repository batch fetch: Found %d repos needing updates (total in registry: %d, cached: %d)",
+                len(repos_to_fetch),
+                len(registry),
+                len(repos_cache),
+            )
+
+            if not repos_to_fetch:
+                _LOG.info(
+                    "Repository batch fetch: all repos up to date, no fetch needed"
+                )
+                return
+
+            # Fetch up to BATCH_SIZE repos
+            _LOG.debug(
+                "Repository batch fetch: Starting batch of up to %d repos",
+                min(REPO_FETCH_BATCH_SIZE, len(repos_to_fetch)),
+            )
+
+            fetch_count = 0
+            for owner, repo, cache_key in repos_to_fetch[:REPO_FETCH_BATCH_SIZE]:
+                _LOG.debug(
+                    "Fetching repo info for %s/%s (%d/%d in batch)",
+                    owner,
+                    repo,
+                    fetch_count + 1,
+                    min(REPO_FETCH_BATCH_SIZE, len(repos_to_fetch)),
+                )
+
+                repo_info = _github_client.get_repository_info(owner, repo)
+                if repo_info:
+                    repos_cache[cache_key] = {"cached_at": now, "data": repo_info}
+                    fetch_count += 1
+                    _LOG.debug("Successfully fetched %s/%s", owner, repo)
+                else:
+                    _LOG.warning("Failed to fetch repo info for %s/%s", owner, repo)
+
+            # Save updated cache
+            if fetch_count > 0:
+                # Always update last_batch_time after fetching to enforce 1-hour rate limit
+                # This ensures we only fetch max 10 repos per hour (REPO_FETCH_BATCH_SIZE)
+                cache["last_batch_time"] = now
+                cache["repos"] = repos_cache
+                save_repo_cache(cache)
+
+                remaining_count = len(repos_to_fetch) - fetch_count
+                if remaining_count == 0:
+                    _LOG.info(
+                        "Repository batch fetch: Successfully fetched %d/%d repos - ALL REPOS CACHED (%d total)",
+                        fetch_count,
+                        len(repos_to_fetch),
+                        len(repos_cache),
+                    )
+                else:
+                    _LOG.info(
+                        "Repository batch fetch: Successfully fetched %d/%d repos (total cached: %d, remaining: %d) - next batch in 1 hour",
+                        fetch_count,
+                        len(repos_to_fetch),
+                        len(repos_cache),
+                        remaining_count,
+                    )
+            else:
+                _LOG.warning("Repository batch fetch: No repos successfully fetched")
+
+        except Exception as e:
+            _LOG.error("Failed to fetch repository batch: %s", e, exc_info=True)
+
     def check_orphaned_entities(self) -> None:
         """
         Check for orphaned entities in activities and send notifications.
@@ -4940,12 +5346,12 @@ class WebServer:
             _LOG.debug("Checking for new system messages from GitHub...")
             messages_service = get_system_messages_service()
             success = messages_service.fetch_from_github()
-            
+
             if success:
                 _LOG.info("System messages updated from GitHub")
             else:
                 _LOG.debug("No new system messages or fetch failed")
-                
+
         except Exception as e:
             _LOG.warning("Failed to check system messages: %s", e)
 

@@ -3,16 +3,18 @@
 :license: Mozilla Public License Version 2.0, see LICENSE for more details.
 """
 
-import certifi
 import json
 import logging
-import requests
 from dataclasses import dataclass
 from datetime import datetime
 
-from const import SYSTEM_MESSAGES_FILE, SYSTEM_MESSAGES_URL, MANAGER_DATA_FILE
+import certifi
+import requests
+from const import MANAGER_DATA_FILE, SYSTEM_MESSAGES_FILE, SYSTEM_MESSAGES_URL
 
 _LOG = logging.getLogger(__name__)
+
+
 @dataclass
 class SystemMessage:
     """Represents a system message."""
@@ -44,13 +46,12 @@ class SystemMessagesService:
         self._load_read_status()
 
     def _load_messages(self) -> None:
-        """Load system messages from file."""
+        """Load system messages from system_messages.json file."""
         try:
             with open(SYSTEM_MESSAGES_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                self._messages = [
-                    SystemMessage(**msg) for msg in data.get("messages", [])
-                ]
+                messages_data = data.get("messages", [])
+                self._messages = [SystemMessage(**msg) for msg in messages_data]
                 _LOG.debug("Loaded %d system messages", len(self._messages))
         except FileNotFoundError:
             _LOG.debug("System messages file not found, starting with empty list")
@@ -89,7 +90,7 @@ class SystemMessagesService:
             # Save back to file
             with open(MANAGER_DATA_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-                
+
             _LOG.debug("Saved %d read message IDs", len(self._read_message_ids))
         except Exception as e:
             _LOG.error("Failed to save read message status: %s", e)
@@ -149,7 +150,7 @@ class SystemMessagesService:
         before_count = len(self._read_message_ids)
         self._read_message_ids.update(message_ids)
         after_count = len(self._read_message_ids)
-        
+
         if after_count > before_count:
             self._save_read_status()
             _LOG.info(
@@ -164,7 +165,7 @@ class SystemMessagesService:
 
     def fetch_from_github(self) -> bool:
         """
-        Fetch system messages from GitHub and update local file.
+        Fetch system messages from GitHub and update manager.json.
 
         :return: True if fetch was successful, False otherwise
         """
@@ -176,33 +177,33 @@ class SystemMessagesService:
                 verify=certifi.where(),
             )
             response.raise_for_status()
-            
+
             # Parse and validate the response
             data = response.json()
             if "messages" not in data:
                 _LOG.warning("Invalid system messages format from GitHub")
                 return False
-            
+
             # Validate message structure
             try:
                 messages = [SystemMessage(**msg) for msg in data["messages"]]
             except (TypeError, KeyError) as e:
                 _LOG.error("Invalid message structure from GitHub: %s", e)
                 return False
-            
-            # Save to local file as cache
+
+            # Save to system_messages.json file
             with open(SYSTEM_MESSAGES_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-            
+
             _LOG.info(
                 "Successfully fetched and saved %d system messages from GitHub",
                 len(messages),
             )
-            
+
             # Reload messages into memory
             self._load_messages()
             return True
-            
+
         except requests.RequestException as e:
             _LOG.warning("Failed to fetch system messages from GitHub: %s", e)
             return False

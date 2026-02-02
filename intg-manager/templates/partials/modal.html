@@ -4,15 +4,15 @@
      onclick="closeModal(event)">
     <div class="fixed inset-0 flex items-center justify-center p-4">
         <div id="modal-container" 
-             class="bg-uc-card border border-uc-border rounded-xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-hidden transform transition-all duration-300 scale-95 opacity-0"
+             class="bg-uc-light-card dark:bg-uc-card border border-uc-light-border dark:border-uc-border rounded-xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-hidden transform transition-all duration-300 scale-95 opacity-0"
              onclick="event.stopPropagation()">
             
             <!-- Modal Header -->
             <div class="flex items-center justify-between px-6 py-4 border-b border-uc-border">
-                <h2 id="modal-title" class="text-xl font-semibold text-white">Modal Title</h2>
+                <h2 id="modal-title" class="text-xl font-semibold text-gray-900 dark:text-white">Modal Title</h2>
                 <button 
                     onclick="closeModal()"
-                    class="text-gray-400 hover:text-white transition-colors p-1 rounded-lg hover:bg-uc-darker"
+                    class="text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-uc-darker"
                     aria-label="Close modal">
                     <i class="fas fa-times text-xl"></i>
                 </button>
@@ -30,7 +30,7 @@
             </div>
             
             <!-- Modal Footer (Optional) -->
-            <div id="modal-footer" class="hidden px-6 py-4 border-t border-uc-border bg-uc-darker/50">
+            <div id="modal-footer" class="hidden px-6 py-4 border-t border-uc-light-border dark:border-uc-border bg-gray-50 dark:bg-uc-darker/50">
                 <!-- Footer content can be added dynamically if needed -->
             </div>
         </div>

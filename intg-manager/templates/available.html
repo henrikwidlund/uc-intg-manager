@@ -7,8 +7,8 @@
     <!-- Page Header -->
     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-0">
         <div>
-            <h2 class="text-xl sm:text-2xl font-bold text-white">Available Integrations</h2>
-            <p class="mt-1 text-sm sm:text-base text-gray-400">
+            <h2 class="text-xl sm:text-2xl font-bold text-gray-900 dark:text-white">Available Integrations</h2>
+            <p class="mt-1 text-sm sm:text-base text-gray-600 dark:text-gray-400">
                 Discover and install new integrations for your Remote
             </p>
         </div>
@@ -25,7 +25,7 @@
     </div>
 
     <!-- Category Filter -->
-    <div class="bg-uc-card rounded-xl p-4 border border-uc-border">
+    <div class="bg-uc-light-card dark:bg-uc-card rounded-xl p-4 border border-uc-light-border dark:border-uc-border">
         <div class="flex flex-col sm:flex-row gap-4">
             <div class="flex-1">
                 <div class="relative">
@@ -35,11 +35,11 @@
                         id="available-search"
                         placeholder="Search available integrations..." 
                         oninput="filterAvailableIntegrations()"
-                        class="w-full pl-10 pr-4 py-2 bg-uc-darker border border-uc-border rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-uc-primary focus:border-transparent">
+                        class="w-full pl-10 pr-4 py-2 bg-white dark:bg-uc-darker border border-gray-300 dark:border-uc-border rounded-lg text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-uc-primary focus:border-transparent">
                 </div>
             </div>
             <div class="flex flex-col sm:flex-row gap-2">
-                <select id="available-category-filter" onchange="filterAvailableIntegrations()" class="px-3 sm:px-4 py-2 bg-uc-darker border border-uc-border rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-uc-primary">
+                <select id="available-category-filter" onchange="filterAvailableIntegrations()" class="px-3 sm:px-4 py-2 bg-white dark:bg-uc-darker border border-gray-300 dark:border-uc-border rounded-lg text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-uc-primary">
                     <option value="all">All Categories</option>
                     <option value="home-automation">Home Automation</option>
                     <option value="av-receiver">AV Receivers</option>
@@ -55,12 +55,36 @@
                     <option value="cover">Covers & Shades</option>
                     <option value="video-processor">Video Processors</option>
                 </select>
-                <select id="available-status-filter" onchange="filterAvailableIntegrations()" class="px-3 sm:px-4 py-2 bg-uc-darker border border-uc-border rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-uc-primary">
+                <select id="available-status-filter" onchange="filterAvailableIntegrations()" class="px-3 sm:px-4 py-2 bg-white dark:bg-uc-darker border border-gray-300 dark:border-uc-border rounded-lg text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-uc-primary">
                     <option value="all">All</option>
                     <option value="not-installed">Not Installed</option>
                     <option value="installed">Installed</option>
                     <option value="updates">Updates Available</option>
                 </select>
+                <div class="flex gap-2 w-full sm:w-auto">
+                    <select id="available-sort-by" 
+                            hx-post="/api/settings/sort"
+                            hx-vals='js:{sort_by: event.target.value, sort_reverse: document.getElementById("sort-reverse-flag").value}'
+                            hx-target="#available-container"
+                            hx-swap="innerHTML"
+                            hx-indicator="#refresh-spinner"
+                            class="flex-1 sm:flex-initial px-3 sm:px-4 py-2 bg-white dark:bg-uc-darker border border-gray-300 dark:border-uc-border rounded-lg text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-uc-primary">
+                        <option value="original">Original Order</option>
+                        <option value="stars">Most Stars</option>
+                        <option value="downloads">Most Downloads</option>
+                        <option value="created">Newest</option>
+                        <option value="updated">Recently Updated</option>
+                        <option value="name">Alphabetical</option>
+                    </select>
+                    <button 
+                        id="sort-reverse-btn"
+                        onclick="toggleSortReverse()"
+                        title="Reverse sort order"
+                        class="p-2 bg-white dark:bg-uc-darker border border-gray-300 dark:border-uc-border rounded-lg text-gray-900 dark:text-white hover:bg-gray-100 dark:hover:bg-uc-card transition-colors">
+                        <i id="sort-reverse-icon" class="fa-solid fa-arrow-down-wide-short h-4 w-4"></i>
+                    </button>
+                    <input type="hidden" id="sort-reverse-flag" value="false">
+                </div>
             </div>
         </div>
     </div>
@@ -115,5 +139,52 @@ function filterAvailableIntegrations() {
         card.style.display = (matchesSearch && matchesCategory && matchesStatus) ? '' : 'none';
     });
 }
+
+function toggleSortReverse() {
+    const reverseFlag = document.getElementById('sort-reverse-flag');
+    const reverseIcon = document.getElementById('sort-reverse-icon');
+    const sortBy = document.getElementById('available-sort-by').value;
+    
+    // Toggle the flag
+    const newReverse = reverseFlag.value === 'false' ? 'true' : 'false';
+    reverseFlag.value = newReverse;
+    
+    // Update icon
+    if (newReverse === 'true') {
+        reverseIcon.className = 'fa-solid fa-arrow-up-wide-short h-4 w-4';
+    } else {
+        reverseIcon.className = 'fa-solid fa-arrow-down-wide-short h-4 w-4';
+    }
+    
+    // Trigger HTMX request to update sort
+    htmx.ajax('POST', '/api/settings/sort', {
+        target: '#available-container',
+        swap: 'innerHTML',
+        values: {
+            sort_by: sortBy,
+            sort_reverse: newReverse
+        }
+    });
+}
+
+// Load saved sort settings on page load
+document.addEventListener('DOMContentLoaded', function() {
+    fetch('/api/settings/sort')
+        .then(response => response.json())
+        .then(data => {
+            if (data.sort_by) {
+                document.getElementById('available-sort-by').value = data.sort_by;
+            }
+            if (data.sort_reverse !== undefined) {
+                const reverseFlag = document.getElementById('sort-reverse-flag');
+                const reverseIcon = document.getElementById('sort-reverse-icon');
+                reverseFlag.value = data.sort_reverse ? 'true' : 'false';
+                if (data.sort_reverse) {
+                    reverseIcon.className = 'fa-solid fa-arrow-up-wide-short h-4 w-4';
+                }
+            }
+        })
+        .catch(err => console.error('Failed to load sort settings:', err));
+});
 </script>
 {% endblock %}

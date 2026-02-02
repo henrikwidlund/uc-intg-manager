@@ -6,8 +6,8 @@
 <div class="mb-6 sm:mb-8">
     <div class="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4">
         <div>
-            <h1 class="text-2xl sm:text-3xl font-bold text-white mb-2">Integration Manager Logs</h1>
-            <p class="text-sm sm:text-base text-gray-400">Viewing last {{ log_count }} log messages (newest first)</p>
+            <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white mb-2">Integration Manager Logs</h1>
+            <p class="text-sm sm:text-base text-gray-600 dark:text-gray-400">Viewing last {{ log_count }} log messages (newest first)</p>
         </div>
         <div class="flex gap-2 sm:gap-3">
             <button type="button"
@@ -48,7 +48,7 @@
 </div>
 
 <!-- Log Entries Container -->
-<div class="bg-gray-800 rounded-lg overflow-hidden">
+<div class="bg-uc-light-card dark:bg-gray-800 rounded-lg overflow-hidden border border-uc-light-border dark:border-transparent">
     <div id="log-entries" class="divide-y divide-gray-700 max-h-[70vh] overflow-auto font-mono text-xs sm:text-sm">
         {% include 'partials/log_entries.html' %}
     </div>
