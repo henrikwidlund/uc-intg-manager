@@ -5110,12 +5110,20 @@ class WebServer:
             repos_cache = cache.get("repos", {})
             repos_to_fetch = []
 
+            # Count fresh vs stale cached repos for better logging
+            fresh_count = 0
+            stale_count = 0
+            valid_github_repos = (
+                0  # Count of repos with valid GitHub URLs (owner + repo)
+            )
+
             # Collect repos that need updating (expired or missing)
             for item in registry:
                 home_page = item.get("repository", "")
                 if home_page and "github.com" in home_page:
                     parsed = SyncGitHubClient.parse_github_url(home_page)
                     if parsed:
+                        valid_github_repos += 1
                         owner, repo = parsed
                         cache_key = f"{owner}/{repo}"
 
@@ -5126,12 +5134,18 @@ class WebServer:
                             cached_time = repos_cache[cache_key].get("cached_at", 0)
                             if now - cached_time >= REPO_CACHE_VALIDITY:
                                 repos_to_fetch.append((owner, repo, cache_key))
+                                stale_count += 1
+                            else:
+                                fresh_count += 1
 
             _LOG.info(
-                "Repository batch fetch: Found %d repos needing updates (total in registry: %d, cached: %d)",
+                "Repository batch fetch: Found %d repos needing updates (fresh: %d, stale: %d, missing: %d, valid GitHub repos: %d)",
                 len(repos_to_fetch),
-                len(registry),
-                len(repos_cache),
+                fresh_count,
+                stale_count,
+                len(repos_to_fetch)
+                - stale_count,  # Missing = total needing fetch - stale
+                valid_github_repos,
             )
 
             if not repos_to_fetch:
