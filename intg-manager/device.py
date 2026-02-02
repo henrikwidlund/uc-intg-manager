@@ -312,18 +312,16 @@ class IntegrationManagerDevice(PollingDevice):
                     )
                     try:
                         # Check for version updates
-                        # self._web_server.refresh_integration_versions()
+                        self._web_server.refresh_integration_versions()
 
                         # Check for new integrations in registry
-                        # self._web_server.check_new_integrations()
+                        self._web_server.check_new_integrations()
 
                         # Check for orphaned entities in activities (async version for startup)
                         await self._web_server.check_orphaned_entities_async()
 
-                        # TEMPORARILY DISABLED FOR TESTING - RESTORE LATER
                         # Check for new system messages from GitHub
-                        # self._web_server.check_system_messages()
-                        # END TEMPORARY DISABLE
+                        self._web_server.check_system_messages()
 
                         _LOG.info(
                             "[%s] Initial integration checks complete", self.log_id
@@ -373,18 +371,16 @@ class IntegrationManagerDevice(PollingDevice):
         try:
             # Trigger the web server to refresh version data
             # This updates the cached update availability info and sends update notifications
-            # self._web_server.refresh_integration_versions()
+            self._web_server.refresh_integration_versions()
 
             # Check for new integrations in registry
-            # self._web_server.check_new_integrations()
+            self._web_server.check_new_integrations()
 
             # Check for orphaned entities in activities
             self._web_server.check_orphaned_entities()
 
-            # TEMPORARILY DISABLED FOR TESTING - RESTORE LATER
             # Check for new system messages from GitHub
-            # self._web_server.check_system_messages()
-            # END TEMPORARY DISABLE
+            self._web_server.check_system_messages()
 
             _LOG.debug("[%s] Integration checks complete", self.log_id)
         except Exception as e:
