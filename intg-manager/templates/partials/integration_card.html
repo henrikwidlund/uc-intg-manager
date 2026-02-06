@@ -74,7 +74,7 @@
                 Needs Setup
             </span>
             {% elif integration.custom %}
-            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-500/10 text-purple-300" title="Custom integration installed on the remote">
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-600 dark:bg-purple-500/10 text-white dark:text-purple-300" title="Custom integration installed on the remote">
                 Custom
             </span>
             {% endif %}
@@ -407,7 +407,7 @@
             
             {% if integration.home_page %}
             <a href="{{ integration.home_page }}" target="_blank" rel="noopener"
-               class="text-gray-400 hover:text-white hover:bg-uc-card rounded-lg transition-colors"
+               class="text-gray-400 hover:text-white hover:bg-uc-card rounded-lg transition-colors p-1.5"
                title="View on GitHub">
                 <i class="fa-brands fa-github h-4 w-4"></i>
             </a>
@@ -416,7 +416,7 @@
             <!-- Backup button for configured custom integrations that support backup -->
             {% if integration.state != 'NOT_CONFIGURED' and integration.supports_backup %}
             <button 
-                class="backup-btn inline-flex items-center px-3 py-1.5 bg-uc-darker hover:bg-uc-card text-gray-400 hover:text-white text-sm font-medium rounded-lg transition-colors"
+                class="backup-btn inline-flex items-center px-3 py-1.5 bg-gray-100 dark:bg-uc-darker hover:bg-gray-200 dark:hover:bg-uc-card text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white text-sm font-medium rounded-lg transition-colors"
                 hx-post="/api/backup/{{ integration.driver_id }}"
                 hx-swap="none"
                 hx-indicator="#backup-overlay-{{ integration.driver_id }}"
@@ -441,7 +441,7 @@
             
             {% if integration.home_page %}
             <a href="{{ integration.home_page }}" target="_blank" rel="noopener"
-               class="text-gray-400 hover:text-white hover:bg-uc-card rounded-lg transition-colors"
+               class="text-gray-400 hover:text-white hover:bg-uc-card rounded-lg transition-colors p-1.5"
                title="View on GitHub">
                 <i class="fa-brands fa-github h-4 w-4"></i>
             </a>

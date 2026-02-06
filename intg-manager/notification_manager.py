@@ -24,8 +24,12 @@ class NotificationManager:
     to all enabled providers when specific events occur.
     """
 
-    def __init__(self) -> None:
-        """Initialize the notification manager."""
+    def __init__(self, remote_id: str) -> None:
+        """Initialize the notification manager.
+        
+        :param remote_id: The remote identifier this manager is for
+        """
+        self._remote_id = remote_id
         self._service = NotificationService()
         # Track what we've already notified about to avoid spam
         self._notified_updates: set[str] = set()  # {driver_id:version}
@@ -41,7 +45,14 @@ class NotificationManager:
             if os.path.exists(MANAGER_DATA_FILE):
                 with open(MANAGER_DATA_FILE, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    notification_state = data.get("notification_state", {})
+                    
+                    # v2.0 format - get from this remote's notification_state
+                    notification_state = (
+                        data.get("remotes", {})
+                        .get(self._remote_id, {})
+                        .get("notification_state", {})
+                    )
+                    
                     self._notified_updates = set(
                         notification_state.get("notified_updates", [])
                     )
@@ -55,19 +66,20 @@ class NotificationManager:
                         notification_state.get("notified_orphaned_activities", [])
                     )
                     _LOG.debug(
-                        "Loaded notification state: %d updates, %d errors, %d orphaned activities",
+                        "[%s] Loaded notification state: %d updates, %d errors, %d orphaned activities",
+                        self._remote_id,
                         len(self._notified_updates),
                         len(self._notified_errors),
                         len(self._notified_orphaned_activities),
                     )
         except (json.JSONDecodeError, OSError) as e:
-            _LOG.warning("Failed to load notification state: %s", e)
+            _LOG.warning("[%s] Failed to load notification state: %s", self._remote_id, e)
 
     def _save_notification_state(self) -> None:
         """Save notification state to manager.json file."""
         try:
             # Load existing data to preserve other sections
-            existing_data = {}
+            existing_data: dict[str, Any] = {}
             if os.path.exists(MANAGER_DATA_FILE):
                 try:
                     with open(MANAGER_DATA_FILE, "r", encoding="utf-8") as f:
@@ -75,8 +87,24 @@ class NotificationManager:
                 except (json.JSONDecodeError, OSError):
                     pass
 
-            # Update notification state section
-            existing_data["notification_state"] = {
+            # Ensure v2.0 structure (should already be migrated at startup)
+            if existing_data.get("version") != "2.0":
+                _LOG.error("manager.json is not v2.0 format - migration should have run at startup")
+                existing_data["version"] = "2.0"
+                if "remotes" not in existing_data:
+                    existing_data["remotes"] = {}
+                if "shared" not in existing_data:
+                    existing_data["shared"] = {}
+
+            # Ensure remote entry exists
+            if self._remote_id not in existing_data.get("remotes", {}):
+                _LOG.warning("[%s] Remote not found in manager.json, creating entry", self._remote_id)
+                if "remotes" not in existing_data:
+                    existing_data["remotes"] = {}
+                existing_data["remotes"][self._remote_id] = {}
+
+            # Update notification state for this remote
+            existing_data["remotes"][self._remote_id]["notification_state"] = {
                 "notified_updates": list(self._notified_updates),
                 "notified_errors": self._notified_errors,
                 "consecutive_errors": self._consecutive_errors,
@@ -84,7 +112,6 @@ class NotificationManager:
                     self._notified_orphaned_activities
                 ),
             }
-            existing_data["version"] = "1.0"
 
             # Ensure directory exists
             os.makedirs(os.path.dirname(MANAGER_DATA_FILE), exist_ok=True)
@@ -92,13 +119,13 @@ class NotificationManager:
             # Write to disk
             with open(MANAGER_DATA_FILE, "w", encoding="utf-8") as f:
                 json.dump(existing_data, f, indent=2)
-            _LOG.debug("Saved notification state to %s", MANAGER_DATA_FILE)
+            _LOG.debug("[%s] Saved notification state to %s", self._remote_id, MANAGER_DATA_FILE)
         except OSError as e:
-            _LOG.error("Failed to save notification state: %s", e)
+            _LOG.error("[%s] Failed to save notification state: %s", self._remote_id, e)
 
     def _load_settings(self) -> NotificationSettings:
         """Load current notification settings."""
-        return NotificationSettings.load()
+        return NotificationSettings.load(remote_id=self._remote_id)
 
     def _should_notify(self, settings: NotificationSettings) -> bool:
         """Check if any notification provider is enabled."""
@@ -221,7 +248,7 @@ class NotificationManager:
             )
             self._save_notification_state()
             return
-        
+
         # At this point, current_count >= CONSECUTIVE_THRESHOLD, so we can notify
         # Only notify if this is a new error or the error state changed
         if self._notified_errors.get(driver_id) == state:
@@ -351,9 +378,23 @@ class NotificationManager:
         :param integration_data: List of tuples (integration_id, integration_name)
         :return: List of integration names that are new (empty if none)
         """
-        settings = self._load_settings()
+        # Load registry tracking from shared data (v2.0)
+        try:
+            if os.path.exists(MANAGER_DATA_FILE):
+                with open(MANAGER_DATA_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    
+                    # v2.0 format - load from shared.registry_tracking
+                    shared = data.get("shared", {})
+                    registry_tracking = shared.get("registry_tracking", {})
+                    known_ids = set(registry_tracking.get("_known_integration_ids", []))
+            else:
+                known_ids = set()
+        except (json.JSONDecodeError, OSError) as e:
+            _LOG.warning("Failed to load registry tracking: %s", e)
+            known_ids = set()
+
         current_ids = {item[0] for item in integration_data}
-        known_ids = set(settings._known_integration_ids)
 
         # Find new integrations - but only notify if we had known integrations before
         # (skip notification on first run when known_ids is empty)
@@ -368,18 +409,14 @@ class NotificationManager:
             id_to_name = {item[0]: item[1] for item in integration_data}
             new_names = [id_to_name[new_id] for new_id in new_ids]
 
-            # Update the stored list of known IDs
-            settings._known_integration_ids = list(current_ids)
-            settings._last_registry_count = len(current_ids)
-            settings.save()
+            # Update the stored list of known IDs in shared registry_tracking
+            self._save_registry_tracking(list(current_ids), len(current_ids))
 
             return new_names
 
         # Update tracking (first run or no new integrations)
         if known_ids != current_ids:
-            settings._known_integration_ids = list(current_ids)
-            settings._last_registry_count = len(current_ids)
-            settings.save()
+            self._save_registry_tracking(list(current_ids), len(current_ids))
             if not known_ids:
                 _LOG.debug(
                     "First run: initialized registry tracking with %d integrations",
@@ -388,17 +425,78 @@ class NotificationManager:
 
         return []
 
+    def _save_registry_tracking(self, known_ids: list[str], count: int) -> None:
+        """Save registry tracking to shared data."""
+        try:
+            # Load existing data
+            existing_data = {}
+            if os.path.exists(MANAGER_DATA_FILE):
+                try:
+                    with open(MANAGER_DATA_FILE, "r", encoding="utf-8") as f:
+                        existing_data = json.load(f)
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+            # Ensure v2.0 structure exists
+            if existing_data.get("version") != "2.0":
+                existing_data["version"] = "2.0"
+                if "shared" not in existing_data:
+                    existing_data["shared"] = {}
+
+            # Update registry tracking in shared section
+            if "registry_tracking" not in existing_data["shared"]:
+                existing_data["shared"]["registry_tracking"] = {}
+            
+            existing_data["shared"]["registry_tracking"]["_known_integration_ids"] = known_ids
+            existing_data["shared"]["registry_tracking"]["_last_registry_count"] = count
+
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(MANAGER_DATA_FILE), exist_ok=True)
+
+            # Write to disk
+            with open(MANAGER_DATA_FILE, "w", encoding="utf-8") as f:
+                json.dump(existing_data, f, indent=2)
+            _LOG.debug("Saved registry tracking: %d integrations", count)
+        except OSError as e:
+            _LOG.error("Failed to save registry tracking: %s", e)
+
 
 # Global notification manager instance
-_notification_manager: NotificationManager | None = None
+_notification_managers: dict[str, NotificationManager] = {}
 
 
-def get_notification_manager() -> NotificationManager:
-    """Get the global notification manager instance."""
-    global _notification_manager
-    if _notification_manager is None:
-        _notification_manager = NotificationManager()
-    return _notification_manager
+def get_notification_manager(remote_id: str | None = None) -> NotificationManager:
+    """Get the notification manager instance for a remote.
+
+    :param remote_id: Remote identifier. If None, returns manager for first available remote.
+    :return: NotificationManager instance for the specified remote
+    """
+    global _notification_managers
+    
+    # If no remote_id provided, use first available remote from manager.json
+    if remote_id is None:
+        if os.path.exists(MANAGER_DATA_FILE):
+            try:
+                with open(MANAGER_DATA_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    remotes = data.get("remotes", {})
+                    if remotes:
+                        remote_id = next(iter(remotes.keys()))
+                    else:
+                        _LOG.error("No remotes found in manager.json")
+                        # Create a default manager with empty remote_id
+                        remote_id = ""
+            except (json.JSONDecodeError, OSError) as e:
+                _LOG.error("Failed to read manager.json: %s", e)
+                remote_id = ""
+        else:
+            remote_id = ""
+    
+    # Get or create manager for this remote
+    if remote_id not in _notification_managers:
+        _notification_managers[remote_id] = NotificationManager(remote_id)
+    
+    return _notification_managers[remote_id]
 
 
 def send_notification_sync(coro_func, *args: Any, **kwargs: Any) -> None:

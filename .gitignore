@@ -80,7 +80,8 @@ celerybeat-schedule
 .env
 
 # virtualenv
-venv/
+.venv/
+.ruff_cache/
 ENV/
 
 # Spyder project settings
@@ -101,11 +102,8 @@ ENV/
 
 .DS_Store
 
-config.json
-manager.json
-system_messages.json
 env
 licenses.json
 tools/licenses.md
-config/
-data/
+config/*
+data/*

@@ -110,6 +110,7 @@ class NotificationSettings:
     Notification settings for all providers.
 
     These settings control how and where notifications are sent.
+    Per-remote in multi-remote setups.
     """
 
     home_assistant: HomeAssistantNotificationConfig = field(
@@ -138,45 +139,23 @@ class NotificationSettings:
     triggers: NotificationTriggers = field(default_factory=NotificationTriggers)
     """Notification trigger preferences."""
 
-    # Track registry for new integration detection
-    _last_registry_count: int = 0
-    """Internal: Last known count of integrations in registry."""
-
-    _known_integration_ids: list[str] = field(default_factory=list)
-    """Internal: List of known integration IDs from registry."""
-
     @classmethod
-    def load(cls) -> NotificationSettings:
-        """Load notification settings from manager.json or return defaults."""
+    def load(cls, remote_id: str | None = None) -> "NotificationSettings":
+        """
+        Load notification settings from shared section.
+
+        Note: remote_id parameter is kept for API compatibility but not used
+        since notification settings are shared across all remotes.
+
+        :param remote_id: Ignored - notification settings are shared
+        """
         if os.path.exists(NOTIFICATION_SETTINGS_FILE):
             try:
                 with open(NOTIFICATION_SETTINGS_FILE, encoding="utf-8") as f:
                     file_data = json.load(f)
-                    # Get notification_settings section from manager.json
-                    data = file_data.get("notification_settings", {})
 
-                    if not data:
-                        # Try legacy location for migration
-                        legacy_file = os.path.expanduser(
-                            "~/.ucintg/notification_settings.json"
-                        )
-                        if os.path.exists(legacy_file):
-                            _LOG.info(
-                                "Migrating notification settings from legacy location"
-                            )
-                            with open(legacy_file, encoding="utf-8") as lf:
-                                data = json.load(lf)
-                            # Save to new location and return
-                            settings = cls._parse_settings_data(data)
-                            settings.save()
-                            # Clean up legacy file
-                            try:
-                                os.remove(legacy_file)
-                                _LOG.info("Removed legacy notification settings file")
-                            except OSError:
-                                pass
-                            return settings
-                        return cls()
+                    # v2.0 format - load from shared section
+                    data = file_data.get("shared", {}).get("notification_settings", {})
 
                     return cls._parse_settings_data(data)
             except (json.JSONDecodeError, OSError) as e:
@@ -184,7 +163,7 @@ class NotificationSettings:
         return cls()
 
     @classmethod
-    def _parse_settings_data(cls, data: dict) -> NotificationSettings:
+    def _parse_settings_data(cls, data: dict) -> "NotificationSettings":
         """Parse settings data dict into NotificationSettings instance."""
         # Convert nested dicts to dataclass instances
         if "home_assistant" in data:
@@ -204,13 +183,24 @@ class NotificationSettings:
 
         return cls(**data)
 
-    def save(self) -> None:
-        """Save notification settings to manager.json."""
+    def save(self, remote_id: str | None = None) -> None:
+        """
+        Save notification settings to shared section.
+
+        Note: remote_id parameter is kept for API compatibility but not used
+        since notification settings are shared across all remotes.
+
+        :param remote_id: Ignored - notification settings are shared
+        """
         try:
             os.makedirs(os.path.dirname(NOTIFICATION_SETTINGS_FILE), exist_ok=True)
 
-            # Load existing data to preserve other sections
-            existing_data = {}
+            # Load existing data
+            existing_data: dict[str, Any] = {
+                "version": "2.0",
+                "remotes": {},
+                "shared": {},
+            }
             if os.path.exists(NOTIFICATION_SETTINGS_FILE):
                 try:
                     with open(NOTIFICATION_SETTINGS_FILE, "r", encoding="utf-8") as f:
@@ -218,13 +208,21 @@ class NotificationSettings:
                 except (json.JSONDecodeError, OSError):
                     pass
 
-            # Update notification_settings section
-            existing_data["notification_settings"] = self.to_dict()
-            existing_data["version"] = "1.0"
+            # Ensure minimal v2.0 structure exists
+            if "shared" not in existing_data:
+                _LOG.error("manager.json missing 'shared' section - creating it")
+                if "version" not in existing_data:
+                    existing_data["version"] = "2.0"
+                if "remotes" not in existing_data:
+                    existing_data["remotes"] = {}
+                existing_data["shared"] = {}
+
+            # Update notification settings in shared section
+            existing_data["shared"]["notification_settings"] = self.to_dict()
 
             with open(NOTIFICATION_SETTINGS_FILE, "w", encoding="utf-8") as f:
                 json.dump(existing_data, f, indent=2)
-            _LOG.info("Notification settings saved to %s", NOTIFICATION_SETTINGS_FILE)
+            _LOG.debug("Notification settings saved to shared section")
         except OSError as e:
             _LOG.error("Failed to save notification settings: %s", e)
 

@@ -10,6 +10,7 @@ It manages connections, polls power status, and controls the web server.
 import logging
 import os
 import socket
+import json
 from asyncio import AbstractEventLoop
 from datetime import datetime
 from typing import Any
@@ -21,12 +22,25 @@ from const import (
     POWER_POLL_INTERVAL,
     VERSION_CHECK_INTERVAL_POLLS,
     WEB_SERVER_PORT,
+    MANAGER_DATA_FILE,
 )
 from remote_api import RemoteAPIClient, RemoteAPIError
 from web_server import WebServer
 from ucapi_framework import BaseConfigManager, PollingDevice, BaseIntegrationDriver
 
 _LOG = logging.getLogger(__name__)
+
+# Module-level web server ownership coordination
+_web_server_owner_id: str | None = None
+_web_server_lock = asyncio.Lock()
+_all_remote_configs: list[RemoteConfig] = []
+_web_server_instance: WebServer | None = None
+
+
+def register_remote_config(config: RemoteConfig) -> None:
+    """Register a remote config for multi-remote support."""
+    if config not in _all_remote_configs:
+        _all_remote_configs.append(config)
 
 
 class IntegrationManagerDevice(PollingDevice):
@@ -63,8 +77,8 @@ class IntegrationManagerDevice(PollingDevice):
 
         self._device_config: RemoteConfig = device_config
 
-        # Load user settings
-        self._settings = Settings.load()
+        # Load user settings for this remote
+        self._settings = Settings.load(remote_id=device_config.identifier)
 
         # Initialize the Remote API client
         self._client = RemoteAPIClient(
@@ -88,6 +102,15 @@ class IntegrationManagerDevice(PollingDevice):
 
         # Last backup date for scheduling
         self._last_backup_date: str | None = None
+
+        # Web server ownership (for multi-remote coordination)
+        self._is_web_server_owner: bool = False
+
+        # Register this remote config for multi-remote support
+        register_remote_config(device_config)
+
+        # Ensure this remote exists in manager.json
+        self._ensure_remote_in_manager_json()
 
     # =========================================================================
     # Properties
@@ -117,6 +140,89 @@ class IntegrationManagerDevice(PollingDevice):
     def is_docked(self) -> bool:
         """Return whether the remote is currently docked."""
         return self._is_docked
+
+    # =========================================================================
+    # Remote Registration
+    # =========================================================================
+
+    def _ensure_remote_in_manager_json(self) -> None:
+        """
+        Ensure this remote has an entry in manager.json.
+
+        This is called during device initialization to automatically add
+        new remotes to the manager.json file so they appear in the web UI.
+        """
+        try:
+            # Load existing manager.json
+            if not os.path.exists(MANAGER_DATA_FILE):
+                # No manager.json yet - will be created on first save
+                _LOG.debug(
+                    "[%s] No manager.json yet, will be created on first save",
+                    self.log_id,
+                )
+                return
+
+            with open(MANAGER_DATA_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            # Check if this remote already exists
+            remotes = data.get("remotes", {})
+            if self.identifier in remotes:
+                _LOG.debug("[%s] Remote already exists in manager.json", self.log_id)
+                return
+
+            # Add this remote to manager.json
+            _LOG.info("[%s] Adding new remote to manager.json", self.log_id)
+
+            # Ensure v2.0 structure
+            if "version" not in data:
+                data["version"] = "2.0"
+            if "remotes" not in data:
+                data["remotes"] = {}
+            if "shared" not in data:
+                data["shared"] = {}
+
+            # Add remote entry with empty sections
+            data["remotes"][self.identifier] = {
+                "settings": {},
+                "integrations": {},
+                "notification_state": {},
+            }
+
+            # Save back to file
+            with open(MANAGER_DATA_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+
+            _LOG.info("[%s] Successfully added remote to manager.json", self.log_id)
+
+            # Trigger web server reload if it's already running
+            self._trigger_web_server_reload()
+
+        except (json.JSONDecodeError, OSError) as e:
+            _LOG.error(
+                "[%s] Failed to ensure remote in manager.json: %s", self.log_id, e
+            )
+
+    def _trigger_web_server_reload(self) -> None:
+        """
+        Trigger web server reload with updated remote configs.
+
+        This is called after adding a new remote to ensure the web UI
+        immediately shows the new remote in the dropdown.
+        """
+        global _web_server_instance
+
+        # Use global web server reference if available
+        if _web_server_instance and _web_server_instance.is_running:
+            _LOG.info("[%s] Reloading web server with new remote configs", self.log_id)
+            _web_server_instance.reload_remotes()
+            return
+
+        # Otherwise, remote will appear after web server starts or page refresh
+        _LOG.debug(
+            "[%s] New remote added - will be available when web server starts",
+            self.log_id,
+        )
 
     # =========================================================================
     # Connection Management
@@ -235,6 +341,29 @@ class IntegrationManagerDevice(PollingDevice):
         """
         self._poll_count += 1
 
+        # Build poll activity summary for consolidated logging
+        poll_tasks = []
+        periodic_check = self._poll_count % VERSION_CHECK_INTERVAL_POLLS == 0
+        
+        if periodic_check:
+            poll_tasks.append("versions/orphans/registry")
+        if self._is_web_server_owner and periodic_check:
+            poll_tasks.append("repo-batch")
+        poll_tasks.append("backup-check")
+        poll_tasks.append("error-states")
+        if self._is_web_server_owner:
+            poll_tasks.append("health-check")
+        
+        tasks_str = ", ".join(poll_tasks) if poll_tasks else "dock-status-only"
+        _LOG.debug(
+            "[%s] Poll #%d: %s | docked=%s owner=%s",
+            self.identifier,
+            self._poll_count,
+            tasks_str,
+            self._is_docked,
+            self._is_web_server_owner
+        )
+
         try:
             # Skip dock polling in external/Docker mode - web server always runs
             if not self._is_external:
@@ -249,24 +378,34 @@ class IntegrationManagerDevice(PollingDevice):
                     # Remote just undocked - stop web server
                     await self._on_undocked()
 
+            # Use global web server instance for polling tasks
+            # This allows all remotes to perform their checks even if they're not the owner
+            web_server = _web_server_instance
+
             # Periodic version check (every VERSION_CHECK_INTERVAL_POLLS polls)
             # Only check when docked and web server is running
             if (
                 self._is_docked
-                and self._web_server
-                and self._web_server.is_running
+                and web_server
+                and web_server.is_running
                 and self._poll_count % VERSION_CHECK_INTERVAL_POLLS == 0
             ):
+                # Per-remote task: Check integration versions for this remote
                 await self._check_integration_versions()
-                self._web_server.fetch_repository_batch()
+
+                # Shared task: Fetch repository batch (owner only)
+                if self._is_web_server_owner:
+                    web_server.fetch_repository_batch()
 
             # Periodic backup check - only when docked and web server is running
-            if self._is_docked and self._web_server and self._web_server.is_running:
+            if self._is_docked and web_server and web_server.is_running:
+                # Per-remote task: Scheduled backup for this remote
                 await self._check_scheduled_backup()
 
             # Check for integration error states (disconnected, error, etc.) - runs every poll
-            if self._web_server and self._web_server.is_running:
-                self._web_server.check_error_states()
+            if web_server and web_server.is_running:
+                # Per-remote task: Check error states for this remote
+                web_server.check_error_states(self.identifier)
 
             # Web server health check - verify server is actually accessible when it should be running
             await self._check_web_server_health()
@@ -275,18 +414,48 @@ class IntegrationManagerDevice(PollingDevice):
             _LOG.warning("[%s] Failed to poll power status: %s", self.log_id, e)
 
     async def _on_docked(self) -> None:
-        """Handle remote being docked/charging - start web server."""
-        _LOG.info("[%s] Remote charging started - starting web server", self.log_id)
+        """Handle remote being docked/charging - start web server if elected owner."""
+        _LOG.info("[%s] Remote charging started", self.log_id)
 
         try:
+            global _web_server_owner_id
+
+            # Elect web server owner using lock (first wins)
+            async with _web_server_lock:
+                if _web_server_owner_id is None:
+                    _web_server_owner_id = self.identifier
+                    self._is_web_server_owner = True
+                    _LOG.info("[%s] Elected as web server owner", self.log_id)
+                else:
+                    self._is_web_server_owner = False
+                    _LOG.info(
+                        "[%s] Web server already owned by: %s",
+                        self.log_id,
+                        _web_server_owner_id,
+                    )
+
+            # Only start web server if we're the owner
+            if not self._is_web_server_owner:
+                _LOG.info("[%s] Skipping web server start - not owner", self.log_id)
+                return
+
+            _LOG.info("[%s] Starting web server as owner", self.log_id)
+
             if self._web_server is None:
+                # Pass all registered remote configs to WebServer
                 self._web_server = WebServer(
-                    address=self._device_config.address,
-                    pin=self._device_config.pin if self._device_config.pin else None,
-                    api_key=self._device_config.api_key
-                    if self._device_config.api_key
-                    else None,
+                    remote_configs=_all_remote_configs,
                 )
+                # Set global reference
+                global _web_server_instance
+                _web_server_instance = self._web_server
+            else:
+                # Web server already exists - reload with updated remote configs
+                # This happens when a new remote is added through setup
+                _LOG.info(
+                    "[%s] Reloading web server with updated remote configs", self.log_id
+                )
+                self._web_server.reload_remotes(_all_remote_configs)
 
             if not self._web_server.is_running:
                 self._web_server.start()
@@ -303,17 +472,20 @@ class IntegrationManagerDevice(PollingDevice):
                         "[%s] Triggering initial integration checks...", self.log_id
                     )
                     try:
-                        # Check for version updates
-                        self._web_server.refresh_integration_versions()
+                        # Per-remote: Check for version updates
+                        self._web_server.refresh_integration_versions(self.identifier)
 
-                        # Check for new integrations in registry
-                        self._web_server.check_new_integrations()
+                        # Per-remote: Check for new integrations in registry
+                        self._web_server.check_new_integrations(self.identifier)
 
-                        # Check for orphaned entities in activities (async version for startup)
-                        await self._web_server.check_orphaned_entities_async()
+                        # Per-remote: Check for orphaned entities in activities (async version for startup)
+                        await self._web_server.check_orphaned_entities_async(
+                            self.identifier
+                        )
 
-                        # Check for new system messages from GitHub
-                        self._web_server.check_system_messages()
+                        # Shared (owner only): Check for new system messages from GitHub
+                        if self._is_web_server_owner:
+                            self._web_server.check_system_messages()
 
                         _LOG.info(
                             "[%s] Initial integration checks complete", self.log_id
@@ -336,18 +508,33 @@ class IntegrationManagerDevice(PollingDevice):
 
     async def _on_undocked(self) -> None:
         """Handle remote being undocked/unplugged - conditionally stop web server."""
-        if not self._settings.shutdown_on_battery:
+        # Load settings for THIS remote
+        settings = Settings.load(self.identifier)
+
+        if not settings.shutdown_on_battery:
             _LOG.info(
                 "[%s] Remote on battery - web server remains running (shutdown_on_battery=False)",
                 self.log_id,
             )
             return
 
-        _LOG.info("[%s] Remote on battery - stopping web server", self.log_id)
+        _LOG.info("[%s] Remote on battery", self.log_id)
 
-        if self._web_server and self._web_server.is_running:
+        # Only stop web server if we're the owner
+        if (
+            self._is_web_server_owner
+            and self._web_server
+            and self._web_server.is_running
+        ):
+            global _web_server_owner_id
+
+            # Release ownership
+            async with _web_server_lock:
+                _web_server_owner_id = None
+                self._is_web_server_owner = False
+
             self._web_server.stop()
-            _LOG.info("[%s] Web server stopped", self.log_id)
+            _LOG.info("[%s] Web server stopped and ownership released", self.log_id)
 
     async def _check_integration_versions(self) -> None:
         """
@@ -356,23 +543,25 @@ class IntegrationManagerDevice(PollingDevice):
         This is called periodically during polling to refresh version info.
         The web server caches this data for display in the UI.
         """
-        if not self._web_server:
+        web_server = _web_server_instance
+        if not web_server:
             return
 
         _LOG.info("[%s] Checking for integration updates...", self.log_id)
         try:
-            # Trigger the web server to refresh version data
+            # Per-remote: Trigger the web server to refresh version data
             # This updates the cached update availability info and sends update notifications
-            self._web_server.refresh_integration_versions()
+            web_server.refresh_integration_versions(self.identifier)
 
-            # Check for new integrations in registry
-            self._web_server.check_new_integrations()
+            # Per-remote: Check for new integrations in registry
+            web_server.check_new_integrations(self.identifier)
 
-            # Check for orphaned entities in activities
-            self._web_server.check_orphaned_entities()
+            # Per-remote: Check for orphaned entities in activities
+            web_server.check_orphaned_entities(self.identifier)
 
-            # Check for new system messages from GitHub
-            self._web_server.check_system_messages()
+            # Shared (owner only): Check for new system messages from GitHub
+            if self._is_web_server_owner:
+                web_server.check_system_messages()
 
             _LOG.debug("[%s] Integration checks complete", self.log_id)
         except Exception as e:
@@ -422,12 +611,13 @@ class IntegrationManagerDevice(PollingDevice):
 
         This is called during each poll cycle when docked and web server is running.
         """
-        if not self._web_server:
+        web_server = _web_server_instance
+        if not web_server:
             return
 
         try:
-            # Load current settings to check if backups are enabled
-            settings = Settings.load()
+            # Load current settings for THIS remote to check if backups are enabled
+            settings = Settings.load(self.identifier)
 
             if not settings.backup_configs:
                 return  # Automatic backups disabled
@@ -442,8 +632,9 @@ class IntegrationManagerDevice(PollingDevice):
             )
 
             # Perform the backup via web server (run in executor since it's sync)
+            # Per-remote task: backup for this remote only
             backup_result = await self._loop.run_in_executor(
-                None, self._web_server.perform_scheduled_backup
+                None, web_server.perform_scheduled_backup, self.identifier
             )
 
             # Update last backup date on success
@@ -466,8 +657,13 @@ class IntegrationManagerDevice(PollingDevice):
 
         Called during each poll cycle when the web server should be active.
         """
-        # Only check if we think the server should be running
-        if not self._web_server or not self._web_server.is_running:
+        global _web_server_instance
+
+        # Use global web server instance
+        web_server = _web_server_instance
+
+        # Only the web server owner should perform health checks
+        if not self._is_web_server_owner or not web_server or not web_server.is_running:
             return
 
         # Determine if web server should actually be running based on current conditions
@@ -514,9 +710,9 @@ class IntegrationManagerDevice(PollingDevice):
         # Server is not healthy - perform cleanup and restart
         try:
             # Stop the current server instance (cleanup)
-            if self._web_server:
+            if web_server:
                 try:
-                    self._web_server.stop()
+                    web_server.stop()
                 except Exception as e:
                     _LOG.warning(
                         "[%s] Error stopping unhealthy web server: %s", self.log_id, e
@@ -525,30 +721,30 @@ class IntegrationManagerDevice(PollingDevice):
             await asyncio.sleep(1)
 
             # Create new server instance
-            self._web_server = WebServer(
-                address=self._device_config.address,
-                pin=self._device_config.pin if self._device_config.pin else None,
-                api_key=self._device_config.api_key
-                if self._device_config.api_key
-                else None,
+            new_server = WebServer(
+                remote_configs=_all_remote_configs,
             )
 
             # Start the server
-            self._web_server.start()
+            new_server.start()
 
             # Give it a moment to start
             await asyncio.sleep(0.5)
 
-            if self._web_server.is_running:
+            if new_server.is_running:
                 _LOG.info(
                     "[%s] Web server successfully restarted after health check failure",
                     self.log_id,
                 )
+                # Update both global and local references
+                _web_server_instance = new_server
+                self._web_server = new_server
             else:
                 _LOG.error(
                     "[%s] Web server failed to restart after health check failure",
                     self.log_id,
                 )
+                _web_server_instance = None
                 self._web_server = None
 
         except Exception as e:
@@ -558,6 +754,7 @@ class IntegrationManagerDevice(PollingDevice):
                 e,
                 exc_info=True,
             )
+            _web_server_instance = None
             self._web_server = None
 
     # =========================================================================

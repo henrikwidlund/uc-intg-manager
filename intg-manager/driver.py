@@ -13,6 +13,7 @@ import logging
 import os
 
 from const import RemoteConfig
+from data_migration import migrate
 from device import IntegrationManagerDevice
 from discover import ManagerDiscovery
 from log_handler import setup_log_handler
@@ -36,6 +37,11 @@ async def main():
     logging.getLogger("remote_api").setLevel(level)
     logging.getLogger("github_api").setLevel(level)
     logging.getLogger("integration_service").setLevel(level)
+    logging.getLogger("data_migration").setLevel(level)
+
+    # Force migration to v2.0 format if needed
+    # This ensures all subsequent code can assume v2.0 structure
+    migrate()
 
     # Initialize the integration driver
     # This integration doesn't expose entities - it's purely a web UI

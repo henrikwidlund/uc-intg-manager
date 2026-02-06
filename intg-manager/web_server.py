@@ -35,7 +35,7 @@ from notification_manager import send_notification_sync, get_notification_manage
 from system_messages import get_system_messages_service
 
 import markdown
-from flask import Flask, render_template, jsonify, request, send_file, Response
+from flask import Flask, render_template, jsonify, request, send_file, Response, session
 from werkzeug.serving import make_server
 
 from backup_service import (
@@ -48,12 +48,15 @@ from backup_service import (
 from const import (
     WEB_SERVER_PORT,
     Settings,
+    UIPreferences,
+    RemoteConfig,
     API_DELAY,
     MANAGER_DATA_FILE,
     REPO_CACHE_VALIDITY,
     REPO_FETCH_BATCH_INTERVAL,
     REPO_FETCH_BATCH_SIZE,
 )
+from data_migration import migrate as migrate_v1_to_v2
 from log_handler import get_log_entries, get_log_handler
 from migration_service import extract_migration_mappings
 from sync_api import (
@@ -99,12 +102,71 @@ app.jinja_env.bytecode_cache = None
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 
-# Will be set by WebServer class
-_remote_client: SyncRemoteClient | None = None
+# Session configuration for multi-remote support
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", os.urandom(24).hex())
+app.config["SESSION_TYPE"] = "filesystem"
+app.config["PERMANENT_SESSION_LIFETIME"] = 7776000  # 90 days
+
+# Multi-remote support: dict of remote_id -> SyncRemoteClient
+_remote_clients: dict[str, SyncRemoteClient] = {}
+_remote_configs: dict[str, RemoteConfig] = {}
+
+# GitHub client (shared across all remotes)
 _github_client: SyncGitHubClient | None = None
 
 # User's language preference from remote localization settings
 _user_language_code: str = "en_GB"  # Default to remote's default
+
+
+def get_active_remote_id() -> str | None:
+    """
+    Get the active remote ID from session or localStorage.
+
+    Returns the first configured remote if no session is set.
+    """
+    # Check session first
+    if "active_remote_id" in session:
+        return session["active_remote_id"]
+
+    # Fallback to first configured remote
+    if _remote_configs:
+        return next(iter(_remote_configs.keys()))
+
+    return None
+
+
+def _get_active_remote_client() -> SyncRemoteClient | None:
+    """Get the SyncRemoteClient for the currently active remote."""
+    remote_id = get_active_remote_id()
+    if remote_id:
+        return _remote_clients.get(remote_id)
+    return None
+
+
+def _load_settings() -> Settings:
+    """Load settings for the currently active remote."""
+    return Settings.load(remote_id=get_active_remote_id())
+
+
+def _save_settings(settings: Settings) -> None:
+    """Save settings for the currently active remote."""
+    settings.save(remote_id=get_active_remote_id())
+
+
+def _load_notification_settings() -> NotificationSettings:
+    """Load notification settings (shared across all remotes)."""
+    return NotificationSettings.load(remote_id=get_active_remote_id())
+
+
+def _save_notification_settings(settings: NotificationSettings) -> None:
+    """Save notification settings (shared across all remotes)."""
+    settings.save(remote_id=get_active_remote_id())
+
+
+def _get_remote_name(remote_id: str) -> str:
+    """Get the display name for a remote."""
+    config = _remote_configs.get(remote_id)
+    return config.name if config else remote_id
 
 
 def _get_localized_name(
@@ -229,7 +291,9 @@ class AvailableIntegration:
             self.categories = []
 
 
-def _get_latest_release_for_update(owner: str, repo: str) -> dict[str, Any] | None:
+def _get_latest_release_for_update(
+    owner: str, repo: str, remote_id: str | None = None
+) -> dict[str, Any] | None:
     """
     Get the latest release considering the show_beta_releases setting.
 
@@ -238,12 +302,13 @@ def _get_latest_release_for_update(owner: str, repo: str) -> dict[str, Any] | No
 
     :param owner: GitHub repository owner
     :param repo: GitHub repository name
+    :param remote_id: Remote identifier for loading settings
     :return: Release data or None if not found
     """
     if not _github_client:
         return None
 
-    settings = Settings.load()
+    settings = Settings.load(remote_id=remote_id)
 
     if settings.show_beta_releases:
         # Get recent releases and pick the first non-draft one (could be beta or stable)
@@ -258,23 +323,29 @@ def _get_latest_release_for_update(owner: str, repo: str) -> dict[str, Any] | No
         return _github_client.get_latest_release(owner, repo)
 
 
-def _refresh_version_cache() -> None:
+def _refresh_version_cache(remote_id: str | None = None) -> None:
     """
     Refresh the cached version information for all installed integrations.
 
     This is called after installations/updates to ensure the UI shows
     current version information.
+
+    :param remote_id: Remote identifier to refresh cache for (uses active if None)
     """
     global _cached_version_data, _version_check_timestamp, _cached_driver_ids
 
-    if not _remote_client or not _github_client:
+    if remote_id is None:
+        remote_id = get_active_remote_id()
+
+    client = _remote_clients.get(remote_id) if remote_id else None
+    if not client or not _github_client:
         return
 
     try:
-        _LOG.info("Refreshing version cache after update...")
+        _LOG.info("[%s] Refreshing version cache after update...", remote_id)
 
         # Get installed integrations
-        integrations = _get_installed_integrations()
+        integrations = _get_installed_integrations(remote_id)
         version_updates = {}
         current_driver_ids = set()
 
@@ -296,7 +367,7 @@ def _refresh_version_cache() -> None:
                     continue
 
                 owner, repo = parsed
-                release = _get_latest_release_for_update(owner, repo)
+                release = _get_latest_release_for_update(owner, repo, remote_id)
                 if release:
                     latest_version = release.get("tag_name", "")
                     current_version = integration.version or ""
@@ -319,14 +390,14 @@ def _refresh_version_cache() -> None:
 
                     # Send notification for update available
                     if has_update:
-                        _LOG.info(
-                            "Update available for %s: %s -> %s (cache refresh)",
-                            integration.name,
-                            current_version,
-                            latest_version,
-                        )
+                        # _LOG.info(
+                        #     "Update available for %s: %s -> %s (cache refresh)",
+                        #     integration.name,
+                        #     current_version,
+                        #     latest_version,
+                        # )
                         try:
-                            nm = get_notification_manager()
+                            nm = get_notification_manager(remote_id)
                             _LOG.debug(
                                 "Sending notification for %s",
                                 integration.name,
@@ -360,7 +431,7 @@ def _refresh_version_cache() -> None:
         _LOG.error("Failed to refresh version cache: %s", e)
 
 
-def _get_installed_integrations() -> list[IntegrationInfo]:
+def _get_installed_integrations(remote_id: str | None = None) -> list[IntegrationInfo]:
     """Get list of installed integrations with metadata.
 
     This includes:
@@ -373,8 +444,14 @@ def _get_installed_integrations() -> list[IntegrationInfo]:
     - CUSTOM: installed on the remote via tar.gz
     - EXTERNAL: running in Docker or external server
     - LOCAL: built into firmware
+
+    :param remote_id: Remote identifier to get integrations from (uses active if None)
     """
-    if not _remote_client:
+    if remote_id is None:
+        remote_id = get_active_remote_id()
+
+    client = _remote_clients.get(remote_id) if remote_id else None
+    if not client:
         return []
 
     # Load registry to check for supports_backup flag and driver_id mapping
@@ -414,7 +491,7 @@ def _get_installed_integrations() -> list[IntegrationInfo]:
 
     # First, get all configured instances
     try:
-        instances = _remote_client.get_integrations()
+        instances = client.get_integrations()
     except SyncAPIError as e:
         _LOG.error("Failed to get integrations: %s", e)
         instances = []
@@ -425,7 +502,7 @@ def _get_installed_integrations() -> list[IntegrationInfo]:
 
     # Get all drivers
     try:
-        drivers = _remote_client.get_drivers()
+        drivers = client.get_drivers()
     except SyncAPIError as e:
         _LOG.error("Failed to get drivers: %s", e)
         drivers = []
@@ -496,19 +573,19 @@ def _get_installed_integrations() -> list[IntegrationInfo]:
                 # Always mark that an update is available (for badge display)
                 info.update_available = True
                 info.latest_version = version_info.get("latest", "")
-                _LOG.debug(
-                    "Update available for %s: %s -> %s (from cache)",
-                    driver_id,
-                    info.version,
-                    info.latest_version,
-                )
+                # _LOG.debug(
+                #     "Update available for %s: %s -> %s (from cache)",
+                #     driver_id,
+                #     info.version,
+                #     info.latest_version,
+                # )
 
                 # Show update button for all custom integrations with updates
                 info.can_update = True
-                _LOG.debug(
-                    "Update button enabled for %s (can_update=True, can_auto_update will be determined)",
-                    driver_id,
-                )
+                # _LOG.debug(
+                #     "Update button enabled for %s (can_update=True, can_auto_update will be determined)",
+                #     driver_id,
+                # )
 
                 # Check if automated backup/restore is possible
                 # Requires: supports_backup AND version >= backup_min_version (if specified)
@@ -519,14 +596,14 @@ def _get_installed_integrations() -> list[IntegrationInfo]:
                     try:
                         if Version(info.version) < Version(min_version):
                             info.can_auto_update = False
-                            _LOG.debug(
-                                "Update available for %s: %s -> %s (requires manual reconfiguration - version %s < minimum %s)",
-                                driver_id,
-                                info.version,
-                                info.latest_version,
-                                info.version,
-                                min_version,
-                            )
+                            # _LOG.debug(
+                            #     "Update available for %s: %s -> %s (requires manual reconfiguration - version %s < minimum %s)",
+                            #     driver_id,
+                            #     info.version,
+                            #     info.latest_version,
+                            #     info.version,
+                            #     min_version,
+                            # )
                     except (InvalidVersion, TypeError):
                         # If version parsing fails, allow auto update if supports_backup
                         pass
@@ -539,7 +616,7 @@ def _get_installed_integrations() -> list[IntegrationInfo]:
         if state_upper and ("ERROR" in state_upper or state_upper == "DISCONNECTED"):
             _LOG.info("Integration %s in problem state: %s", info.name, info.state)
             try:
-                nm = get_notification_manager()
+                nm = get_notification_manager(remote_id)
                 send_notification_sync(
                     nm.notify_integration_error_state, driver_id, info.name, info.state
                 )
@@ -548,7 +625,7 @@ def _get_installed_integrations() -> list[IntegrationInfo]:
         else:
             # Integration is not in error state - clear any previous error notification
             try:
-                nm = get_notification_manager()
+                nm = get_notification_manager(remote_id)
                 nm.clear_error_state(driver_id)
             except Exception as notify_error:
                 _LOG.debug("Failed to clear error state: %s", notify_error)
@@ -624,10 +701,10 @@ def _get_installed_integrations() -> list[IntegrationInfo]:
 
                 # Show update button for all custom integrations with updates
                 info.can_update = True
-                _LOG.debug(
-                    "Update button enabled for unconfigured %s (can_update=True)",
-                    driver_id,
-                )
+                # _LOG.debug(
+                #     "Update button enabled for unconfigured %s (can_update=True)",
+                #     driver_id,
+                # )
 
                 # Check if automated backup/restore is possible
                 # Requires: supports_backup AND version >= backup_min_version (if specified)
@@ -638,14 +715,14 @@ def _get_installed_integrations() -> list[IntegrationInfo]:
                     try:
                         if Version(info.version) < Version(min_version):
                             info.can_auto_update = False
-                            _LOG.debug(
-                                "Update available for %s: %s -> %s (requires manual reconfiguration - version %s < minimum %s)",
-                                driver_id,
-                                info.version,
-                                info.latest_version,
-                                info.version,
-                                min_version,
-                            )
+                            # _LOG.debug(
+                            #     "Update available for %s: %s -> %s (requires manual reconfiguration - version %s < minimum %s)",
+                            #     driver_id,
+                            #     info.version,
+                            #     info.latest_version,
+                            #     info.version,
+                            #     min_version,
+                            # )
                     except (InvalidVersion, TypeError):
                         # If version parsing fails, allow auto update if supports_backup
                         pass
@@ -655,14 +732,24 @@ def _get_installed_integrations() -> list[IntegrationInfo]:
     return integrations
 
 
-def _get_available_integrations() -> list[AvailableIntegration]:
-    """Get list of available integrations from registry.
-
-    Uses driver_type from API:
-    - CUSTOM: installed on the remote via tar.gz
-    - EXTERNAL: running in Docker or external server
-    - LOCAL: built into firmware
+def _get_available_integrations(
+    remote_id: str | None = None,
+) -> list[AvailableIntegration]:
     """
+    Get list of available integrations from the registry.
+
+    Returns a list of AvailableIntegration objects representing integrations
+    that can be installed. Includes installed status checking.
+
+    Also checks for new integrations in registry and sends notifications.
+
+    :param remote_id: Remote identifier to check installed status against (uses active if None)
+    """
+    if remote_id is None:
+        remote_id = get_active_remote_id()
+
+    client = _remote_clients.get(remote_id) if remote_id else None
+
     registry = load_registry()
 
     # Get installed driver info for comparison
@@ -670,10 +757,10 @@ def _get_available_integrations() -> list[AvailableIntegration]:
     configured_driver_ids = {}  # driver_id -> instance_id
     driver_names = {}  # Map name -> (driver_id, driver_type, version) for fuzzy matching
 
-    if _remote_client:
+    if client:
         try:
             # Get all drivers (installed)
-            drivers = _remote_client.get_drivers()
+            drivers = client.get_drivers()
             for driver in drivers:
                 driver_id = driver.get("driver_id", "")
                 driver_type = driver.get("driver_type", "CUSTOM")
@@ -688,7 +775,7 @@ def _get_available_integrations() -> list[AvailableIntegration]:
 
         try:
             # Get all instances (configured) with their instance IDs
-            for instance in _remote_client.get_integrations():
+            for instance in client.get_integrations():
                 driver_id = instance.get("driver_id", "")
                 instance_id = instance.get("integration_id", "")
                 configured_driver_ids[driver_id] = instance_id
@@ -779,14 +866,14 @@ def _get_available_integrations() -> list[AvailableIntegration]:
                         try:
                             if Version(version) < Version(min_version):
                                 can_auto_update = False
-                                _LOG.debug(
-                                    "Update available for %s: %s -> %s (requires manual reconfiguration - version %s < minimum %s)",
-                                    actual_driver_id,
-                                    version,
-                                    latest_version,
-                                    version,
-                                    min_version,
-                                )
+                                # _LOG.debug(
+                                #     "Update available for %s: %s -> %s (requires manual reconfiguration - version %s < minimum %s)",
+                                #     actual_driver_id,
+                                #     version,
+                                #     latest_version,
+                                #     version,
+                                #     min_version,
+                                # )
                         except (InvalidVersion, TypeError):
                             # If version parsing fails, allow auto update if supports_backup
                             pass
@@ -845,9 +932,9 @@ def _get_available_integrations() -> list[AvailableIntegration]:
         available.append(avail)
 
     # Apply sorting based on settings
-    settings = Settings.load()
-    sort_by = settings.sort_by
-    sort_reverse = settings.sort_reverse
+    ui_prefs = UIPreferences.load()
+    sort_by = ui_prefs.sort_by
+    sort_reverse = ui_prefs.sort_reverse
 
     if sort_by == "stars":
         available.sort(key=lambda x: x.stars, reverse=not sort_reverse)
@@ -863,7 +950,7 @@ def _get_available_integrations() -> list[AvailableIntegration]:
 
     # Check for new integrations in registry and send notification
     try:
-        nm = get_notification_manager()
+        nm = get_notification_manager(remote_id)
         # Use registry IDs (not actual_driver_ids) for tracking to avoid false positives
         # when installing integrations (actual_driver_id can differ from registry id)
         integration_data = [
@@ -965,28 +1052,15 @@ def get_installed_count():
     - driver_type is CUSTOM or EXTERNAL (always count)
     - driver_type is LOCAL only if it has a configured instance
     """
-    if not _remote_client:
+    if not _get_active_remote_client():
         return "0"
 
     try:
-        # Get configured instance driver IDs
-        instances = _remote_client.get_integrations()
-        configured_driver_ids = {i.get("driver_id", "") for i in instances}
+        # Get all installed integrations (includes configured and unconfigured)
+        remote_id = get_active_remote_id()
+        integrations = _get_installed_integrations(remote_id)
 
-        # Get all drivers
-        drivers = _remote_client.get_drivers()
-
-        count = 0
-        for driver in drivers:
-            driver_id = driver.get("driver_id", "")
-            driver_type = driver.get("driver_type", "CUSTOM")
-
-            # Count CUSTOM and EXTERNAL drivers always
-            if driver_type in ("CUSTOM", "EXTERNAL"):
-                count += 1
-            # Count LOCAL only if configured
-            elif driver_type == "LOCAL" and driver_id in configured_driver_ids:
-                count += 1
+        count = len(integrations)
 
         return str(count)
     except SyncAPIError as e:
@@ -997,11 +1071,11 @@ def get_installed_count():
 @app.route("/api/stats/updates-count")
 def get_updates_count():
     """Get the count of integrations with available updates."""
-    if not _remote_client or not _github_client:
+    if not _get_active_remote_client() or not _github_client:
         return "0"
 
     try:
-        integrations = _get_installed_integrations()
+        integrations = _get_installed_integrations(get_active_remote_id())
         count = sum(
             1
             for i in integrations
@@ -1016,24 +1090,29 @@ def get_updates_count():
 @app.route("/api/integrations/list")
 def get_integrations_list():
     """Get HTML partial with list of installed integrations."""
-    if not _remote_client:
+    if not _get_active_remote_client():
         return (
             "<div class='text-red-600 dark:text-red-400'>Service not initialized</div>"
         )
 
     try:
-        integrations = _get_installed_integrations()
+        remote_id = get_active_remote_id()
+        integrations = _get_installed_integrations(remote_id)
 
         # Check if driver list changed (new/removed drivers) and refresh cache if needed
         current_driver_ids = {i.driver_id for i in integrations}
         if current_driver_ids != _cached_driver_ids:
             _LOG.info("Driver list changed, refreshing version cache...")
-            _refresh_version_cache()
+            _refresh_version_cache(remote_id)
             # Re-fetch integrations with updated cache
-            integrations = _get_installed_integrations()
+            integrations = _get_installed_integrations(remote_id)
 
-        settings = Settings.load()
-        remote_ip = _remote_client._address if _remote_client else None
+        settings = Settings.load(remote_id=get_active_remote_id())
+        remote_ip = (
+            _get_active_remote_client()._address
+            if _get_active_remote_client()
+            else None
+        )
         return render_template(
             "partials/integration_list.html",
             integrations=integrations,
@@ -1049,8 +1128,12 @@ def get_integrations_list():
 def get_available_list():
     """Get HTML partial with list of available integrations."""
     try:
-        available = _get_available_integrations()
-        remote_ip = _remote_client._address if _remote_client else None
+        available = _get_available_integrations(get_active_remote_id())
+        remote_ip = (
+            _get_active_remote_client()._address
+            if _get_active_remote_client()
+            else None
+        )
         return render_template(
             "partials/available_list.html",
             integrations=available,
@@ -1064,12 +1147,12 @@ def get_available_list():
 @app.route("/api/integrations/refresh-versions", methods=["POST"])
 def refresh_versions():
     """Manually refresh version cache for all integrations."""
-    if not _remote_client or not _github_client:
+    if not _get_active_remote_client() or not _github_client:
         return jsonify({"status": "error", "message": "Service not initialized"}), 500
 
     try:
         _LOG.info("Manual version cache refresh requested")
-        _refresh_version_cache()
+        _refresh_version_cache(get_active_remote_id())
         return jsonify({"status": "success", "message": "Version cache refreshed"})
     except Exception as e:
         _LOG.error("Failed to refresh version cache: %s", e)
@@ -1079,14 +1162,14 @@ def refresh_versions():
 @app.route("/api/integration/<instance_id>")
 def get_integration_detail(instance_id: str):
     """Get HTML partial with integration details."""
-    if not _remote_client:
+    if not _get_active_remote_client():
         return (
             "<div class='text-red-600 dark:text-red-400'>Service not initialized</div>"
         )
 
     try:
         # Find the integration in the list
-        integrations = _get_installed_integrations()
+        integrations = _get_installed_integrations(get_active_remote_id())
         integration = next(
             (i for i in integrations if i.instance_id == instance_id), None
         )
@@ -1109,7 +1192,7 @@ def update_integration(instance_id: str):
 
     The register_entities behavior is determined by the user's auto_register_entities setting.
     """
-    settings = Settings.load()
+    settings = Settings.load(remote_id=get_active_remote_id())
     version = request.args.get("version") or request.form.get("version")
     return _perform_update_integration(
         instance_id, settings.auto_register_entities, version
@@ -1126,7 +1209,7 @@ def update_integration_alt(instance_id: str):
     If auto_register_entities is enabled, this will NOT register entities.
     If auto_register_entities is disabled, this WILL register entities.
     """
-    settings = Settings.load()
+    settings = Settings.load(remote_id=get_active_remote_id())
     version = request.args.get("version") or request.form.get("version")
     return _perform_update_integration(
         instance_id, not settings.auto_register_entities, version
@@ -1156,7 +1239,7 @@ def _perform_update_integration(
     :param register_entities: Whether to register entities after update
     :param version: Optional specific version to update to (e.g., 'v1.2.3')
     """
-    if not _remote_client or not _github_client:
+    if not _get_active_remote_client() or not _github_client:
         return jsonify({"status": "error", "message": "Service not initialized"}), 500
 
     # Check if another operation is in progress
@@ -1180,7 +1263,8 @@ def _perform_update_integration(
 
     try:
         # Find the integration to get its GitHub URL
-        integrations = _get_installed_integrations()
+        remote_id = get_active_remote_id()
+        integrations = _get_installed_integrations(remote_id)
         integration = next(
             (i for i in integrations if i.instance_id == instance_id), None
         )
@@ -1295,8 +1379,8 @@ def _perform_update_integration(
                 _LOG.info(
                     "Capturing configured entities before update: %s", instance_id
                 )
-                configured_entities = _remote_client.get_configured_entities(
-                    instance_id
+                configured_entities = (
+                    _get_active_remote_client().get_configured_entities(instance_id)
                 )
                 configured_entity_ids = [
                     str(entity.get("entity_id"))
@@ -1354,8 +1438,19 @@ def _perform_update_integration(
                     "Backing up configuration before update: %s", integration.driver_id
                 )
                 try:
+                    client = _get_active_remote_client()
+                    if not client:
+                        with _operation_lock:
+                            _operation_in_progress = False
+                        return jsonify(
+                            {"status": "error", "message": "Service not initialized"}
+                        ), 500
+
                     backup_data = backup_integration(
-                        _remote_client, integration.driver_id, save_to_file=True
+                        client,
+                        integration.driver_id,
+                        save_to_file=True,
+                        remote_id=get_active_remote_id(),
                     )
                     if backup_data:
                         _LOG.info(
@@ -1476,7 +1571,7 @@ def _perform_update_integration(
 
         # Delete the existing driver (cascades to delete instances)
         try:
-            _remote_client.delete_driver(integration.driver_id)
+            _get_active_remote_client().delete_driver(integration.driver_id)
             _LOG.info("Deleted existing driver: %s", integration.driver_id)
         except SyncAPIError as e:
             error_str = str(e).lower()
@@ -1509,7 +1604,7 @@ def _perform_update_integration(
             _LOG.warning("Failed to delete driver, continuing anyway: %s", e)
 
         # Install the new version
-        _remote_client.install_integration(archive_data, filename)
+        _get_active_remote_client().install_integration(archive_data, filename)
         _LOG.info("Updated integration %s successfully", integration.name)
 
         # Brief pause to let installation settle
@@ -1517,7 +1612,7 @@ def _perform_update_integration(
 
         # Post-installation verification - give the remote time to process the driver
         _LOG.debug("Waiting for driver to be ready: %s", integration.driver_id)
-        _remote_client.get_drivers()  # Verify driver is available
+        _get_active_remote_client().get_drivers()  # Verify driver is available
 
         # Additional pause to ensure driver is fully initialized
         time.sleep(API_DELAY * 3)
@@ -1528,7 +1623,7 @@ def _perform_update_integration(
 
         if previous_version:
             # Get current version for migration checks
-            driver_info = _remote_client.get_driver(integration.driver_id)
+            driver_info = _get_active_remote_client().get_driver(integration.driver_id)
             if driver_info:
                 current_version = driver_info.get("version", "")
                 _LOG.info(
@@ -1613,13 +1708,17 @@ def _perform_update_integration(
                 )
 
                 # Step 1: Start setup for restore
-                _remote_client.start_setup(integration.driver_id, reconfigure=False)
+                _get_active_remote_client().start_setup(
+                    integration.driver_id, reconfigure=False
+                )
                 _LOG.info("Started setup for restore (reconfigure=false)")
 
                 time.sleep(API_DELAY * 4)  # Give more time for setup to initialize
 
                 # Step 1a: Check for migration metadata in the setup response
-                setup_response = _remote_client.get_setup(integration.driver_id)
+                setup_response = _get_active_remote_client().get_setup(
+                    integration.driver_id
+                )
                 _LOG.debug("Initial setup response: %s", setup_response)
 
                 # Check if setup is in the right state
@@ -1630,7 +1729,9 @@ def _perform_update_integration(
                         setup_state,
                     )
                     time.sleep(API_DELAY * 2)
-                    setup_response = _remote_client.get_setup(integration.driver_id)
+                    setup_response = _get_active_remote_client().get_setup(
+                        integration.driver_id
+                    )
                     setup_state = setup_response.get("state", "")
                     _LOG.debug("Setup response after wait: %s", setup_response)
 
@@ -1714,7 +1815,7 @@ def _perform_update_integration(
                     _LOG.info("No previous_version provided - skipping migration check")
 
                 # Step 2: PUT /intg/setup/{driver_id} with restore_from_backup="true"
-                _remote_client.send_setup_input(
+                _get_active_remote_client().send_setup_input(
                     integration.driver_id, {"restore_from_backup": "true"}
                 )
                 _LOG.info("Initiated restore mode")
@@ -1732,7 +1833,7 @@ def _perform_update_integration(
                     _LOG.warning("Backup data is not valid JSON, using as-is: %s", e)
                     escaped_backup_data = backup_data
 
-                _remote_client.send_setup_input(
+                _get_active_remote_client().send_setup_input(
                     integration.driver_id,
                     {
                         "restore_from_backup": "true",
@@ -1746,10 +1847,10 @@ def _perform_update_integration(
                 _LOG.info(
                     "Performing post-restore verification for %s", integration.driver_id
                 )
-                _remote_client.get_enabled_integrations()
+                _get_active_remote_client().get_enabled_integrations()
 
                 # Get enabled instances and find our restored instance
-                enabled_instances = _remote_client.get_enabled_instances()
+                enabled_instances = _get_active_remote_client().get_enabled_instances()
                 restored_instance_id = None
                 for instance in enabled_instances:
                     if instance.get("driver_id") == integration.driver_id:
@@ -1761,22 +1862,24 @@ def _perform_update_integration(
                         )
                         break
 
-                _remote_client.get_instantiable_drivers()
-                _remote_client.get_driver(integration.driver_id)
+                _get_active_remote_client().get_instantiable_drivers()
+                _get_active_remote_client().get_driver(integration.driver_id)
 
                 # Get the specific instance to verify it's CONNECTED
                 if restored_instance_id:
-                    instance_detail = _remote_client.get_instance(restored_instance_id)
+                    instance_detail = _get_active_remote_client().get_instance(
+                        restored_instance_id
+                    )
                     device_state = instance_detail.get("device_state", "UNKNOWN")
                     _LOG.info(
                         "Instance %s state: %s", restored_instance_id, device_state
                     )
 
                 # Complete the setup flow twice (like official tool)
-                _remote_client.complete_setup(integration.driver_id)
+                _get_active_remote_client().complete_setup(integration.driver_id)
 
                 # Final verification call after DELETE (like official tool)
-                _remote_client.get_enabled_instances()
+                _get_active_remote_client().get_enabled_instances()
 
                 _LOG.info(
                     "Configuration restored successfully for %s", integration.driver_id
@@ -1786,9 +1889,9 @@ def _perform_update_integration(
                 # Migration needs entities to exist on Remote to update activities
                 all_entities = []
                 if migration_possible and restored_instance_id:
-                    _remote_client.get_enabled_instances()
+                    _get_active_remote_client().get_enabled_instances()
 
-                    all_entities = _remote_client.get_instance_entities(
+                    all_entities = _get_active_remote_client().get_instance_entities(
                         restored_instance_id
                     )
                     _LOG.info(
@@ -1814,7 +1917,7 @@ def _perform_update_integration(
                         _LOG.debug("All entity IDs: %s", all_entity_ids)
 
                         try:
-                            _remote_client.register_entities(
+                            _get_active_remote_client().register_entities(
                                 restored_instance_id, all_entity_ids
                             )
                             _LOG.info(
@@ -1847,7 +1950,7 @@ def _perform_update_integration(
                         )
 
                         # POST with reconfigure=true to get to the configuration mode screen
-                        _remote_client.start_setup(
+                        _get_active_remote_client().start_setup(
                             integration.driver_id, reconfigure=True
                         )
                         _LOG.info("Started setup mode for migration")
@@ -1855,7 +1958,9 @@ def _perform_update_integration(
                         time.sleep(API_DELAY)
 
                         # GET to read the configuration mode screen
-                        setup_response = _remote_client.get_setup(integration.driver_id)
+                        setup_response = _get_active_remote_client().get_setup(
+                            integration.driver_id
+                        )
                         _LOG.debug("Setup response for migration: %s", setup_response)
 
                         # Extract the choice ID (current device)
@@ -1876,7 +1981,7 @@ def _perform_update_integration(
                             raise ValueError("No device choice found")
 
                         # Step 4a: Select "migrate" action with the choice
-                        _remote_client.send_setup_input(
+                        _get_active_remote_client().send_setup_input(
                             integration.driver_id,
                             {"choice": choice_id, "action": "migrate"},
                         )
@@ -1887,7 +1992,9 @@ def _perform_update_integration(
                         time.sleep(API_DELAY * 2)
 
                         # Step 4b: GET the next setup page after selecting migrate
-                        setup_response = _remote_client.get_setup(integration.driver_id)
+                        setup_response = _get_active_remote_client().get_setup(
+                            integration.driver_id
+                        )
                         _LOG.debug(
                             "Setup response after selecting migrate: %s", setup_response
                         )
@@ -1904,7 +2011,7 @@ def _perform_update_integration(
                             )
 
                         # Step 4c: Send previous_version
-                        _remote_client.send_setup_input(
+                        _get_active_remote_client().send_setup_input(
                             integration.driver_id,
                             {"previous_version": previous_version},
                         )
@@ -1913,12 +2020,16 @@ def _perform_update_integration(
                         time.sleep(API_DELAY * 2)
 
                         # GET the migration execution screen (asks for remote_url, pin, etc.)
-                        setup_response = _remote_client.get_setup(integration.driver_id)
+                        setup_response = _get_active_remote_client().get_setup(
+                            integration.driver_id
+                        )
                         _LOG.debug("Migration execution screen: %s", setup_response)
 
                         # Prepare migration data
-                        remote_url = _remote_client._address or "http://localhost"
-                        remote_api_key = _remote_client._api_key or ""
+                        remote_url = (
+                            _get_active_remote_client()._address or "http://localhost"
+                        )
+                        remote_api_key = _get_active_remote_client()._api_key or ""
 
                         _LOG.info(
                             "Executing migration for %s (from %s to %s)",
@@ -1950,7 +2061,7 @@ def _perform_update_integration(
                             current_version,
                         )
 
-                        _remote_client.send_setup_input(
+                        _get_active_remote_client().send_setup_input(
                             integration.driver_id, migration_input
                         )
                         _LOG.debug("Migration execution data sent successfully")
@@ -1960,7 +2071,9 @@ def _perform_update_integration(
                         )  # Give more time for migration to process
 
                         # GET to read the migration mappings response
-                        setup_response = _remote_client.get_setup(integration.driver_id)
+                        setup_response = _get_active_remote_client().get_setup(
+                            integration.driver_id
+                        )
                         _LOG.debug("Migration mappings response: %s", setup_response)
 
                         # Check the state of the response
@@ -2044,7 +2157,9 @@ def _perform_update_integration(
                             )
 
                         # Complete migration setup flow
-                        _remote_client.complete_setup(integration.driver_id)
+                        _get_active_remote_client().complete_setup(
+                            integration.driver_id
+                        )
 
                     except Exception as e:
                         _LOG.warning(
@@ -2071,7 +2186,9 @@ def _perform_update_integration(
                                 "Deleting all entities for instance %s",
                                 restored_instance_id,
                             )
-                            _remote_client.delete_all_entities(restored_instance_id)
+                            _get_active_remote_client().delete_all_entities(
+                                restored_instance_id
+                            )
                             _LOG.info("All entities deleted")
 
                             time.sleep(API_DELAY * 2)
@@ -2086,7 +2203,7 @@ def _perform_update_integration(
                                 "Configured entity IDs: %s", configured_entity_ids
                             )
 
-                            _remote_client.register_entities(
+                            _get_active_remote_client().register_entities(
                                 restored_instance_id, configured_entity_ids
                             )
 
@@ -2110,7 +2227,7 @@ def _perform_update_integration(
                         _LOG.info("Configured entity IDs: %s", configured_entity_ids)
 
                         try:
-                            _remote_client.register_entities(
+                            _get_active_remote_client().register_entities(
                                 restored_instance_id, configured_entity_ids
                             )
 
@@ -2135,9 +2252,9 @@ def _perform_update_integration(
                 )
                 # Try to clean up setup flow even on failure (twice like official tool)
                 try:
-                    _remote_client.complete_setup(integration.driver_id)
+                    _get_active_remote_client().complete_setup(integration.driver_id)
                     # Final verification call after double DELETE
-                    _remote_client.get_enabled_instances()
+                    _get_active_remote_client().get_enabled_instances()
                     time.sleep(API_DELAY)  # Brief pause after cleanup
                 except SyncAPIError:
                     pass
@@ -2149,10 +2266,10 @@ def _perform_update_integration(
                 )
                 # Try to clean up setup flow even on failure (twice like official tool)
                 try:
-                    _remote_client.complete_setup(integration.driver_id)
-                    _remote_client.complete_setup(integration.driver_id)
+                    _get_active_remote_client().complete_setup(integration.driver_id)
+                    _get_active_remote_client().complete_setup(integration.driver_id)
                     # Final verification call after double DELETE
-                    _remote_client.get_enabled_instances()
+                    _get_active_remote_client().get_enabled_instances()
                     time.sleep(API_DELAY)  # Brief pause after cleanup
                 except SyncAPIError:
                     pass
@@ -2170,7 +2287,7 @@ def _perform_update_integration(
 
             # Clear the notified update state since user has updated
             try:
-                nm = get_notification_manager()
+                nm = get_notification_manager(get_active_remote_id())
                 nm.clear_update_notification(
                     integration.driver_id,
                     _cached_version_data[integration.driver_id]["latest"],
@@ -2191,15 +2308,19 @@ def _perform_update_integration(
         time.sleep(API_DELAY)
 
         # Re-fetch the integration info with updated version
-        integrations = _get_installed_integrations()
+        integrations = _get_installed_integrations(remote_id)
         updated_integration = next(
             (i for i in integrations if i.driver_id == integration.driver_id), None
         )
 
         if updated_integration:
             # Return the updated card HTML
-            settings = Settings.load()
-            remote_ip = _remote_client._address if _remote_client else None
+            settings = Settings.load(remote_id=remote_id)
+            remote_ip = (
+                _get_active_remote_client()._address
+                if _get_active_remote_client()
+                else None
+            )
             return render_template(
                 "partials/integration_card.html",
                 integration=updated_integration,
@@ -2214,8 +2335,12 @@ def _perform_update_integration(
                 "Could not find updated integration %s, using original data",
                 integration.driver_id,
             )
-            settings = Settings.load()
-            remote_ip = _remote_client._address if _remote_client else None
+            settings = Settings.load(remote_id=get_active_remote_id())
+            remote_ip = (
+                _get_active_remote_client()._address
+                if _get_active_remote_client()
+                else None
+            )
             return render_template(
                 "partials/integration_card.html",
                 integration=integration,
@@ -2279,7 +2404,7 @@ def update_driver(driver_id: str):
     Since there's no instance, there's nothing to backup or restore - just download
     and install the new version.
     """
-    if not _remote_client or not _github_client:
+    if not _get_active_remote_client() or not _github_client:
         return jsonify({"status": "error", "message": "Service not initialized"}), 500
 
     # Get optional version parameter from query string or form data
@@ -2303,7 +2428,8 @@ def update_driver(driver_id: str):
 
     try:
         # Find the driver to get its GitHub URL
-        integrations = _get_installed_integrations()
+        remote_id = get_active_remote_id()
+        integrations = _get_installed_integrations(remote_id)
         integration = next((i for i in integrations if i.driver_id == driver_id), None)
 
         if not integration:
@@ -2435,7 +2561,7 @@ def update_driver(driver_id: str):
 
         # Delete the existing driver
         try:
-            _remote_client.delete_driver(driver_id)
+            _get_active_remote_client().delete_driver(driver_id)
             _LOG.info("Deleted existing driver: %s", driver_id)
         except SyncAPIError as e:
             error_str = str(e).lower()
@@ -2465,7 +2591,7 @@ def update_driver(driver_id: str):
             _LOG.warning("Failed to delete driver, continuing anyway: %s", e)
 
         # Install the new version
-        _remote_client.install_integration(archive_data, filename)
+        _get_active_remote_client().install_integration(archive_data, filename)
         _LOG.info("Updated driver %s successfully", integration.name)
 
         # Wait for the specific driver to appear in the driver list
@@ -2474,7 +2600,7 @@ def update_driver(driver_id: str):
         for attempt in range(10):
             time.sleep(0.5)
             try:
-                drivers = _remote_client.get_drivers()
+                drivers = _get_active_remote_client().get_drivers()
                 if any(d.get("driver_id") == driver_id for d in drivers):
                     driver_found = True
                     _LOG.debug(
@@ -2505,7 +2631,7 @@ def update_driver(driver_id: str):
 
             # Clear the notified update state since user has updated
             try:
-                nm = get_notification_manager()
+                nm = get_notification_manager(get_active_remote_id())
                 nm.clear_update_notification(
                     driver_id, _cached_version_data[driver_id]["latest"]
                 )
@@ -2524,12 +2650,16 @@ def update_driver(driver_id: str):
 
         # Re-fetch the integration info with updated version from available list
         # Since this is for unconfigured drivers, we use _get_available_integrations
-        available = _get_available_integrations()
+        available = _get_available_integrations(remote_id)
         updated_integration = next(
             (i for i in available if i.driver_id == driver_id), None
         )
 
-        remote_ip = _remote_client._address if _remote_client else None
+        remote_ip = (
+            _get_active_remote_client()._address
+            if _get_active_remote_client()
+            else None
+        )
 
         if updated_integration:
             # Return the updated card HTML for available list
@@ -2546,13 +2676,13 @@ def update_driver(driver_id: str):
                 "Could not find updated driver %s in available list, checking installed",
                 driver_id,
             )
-            integrations = _get_installed_integrations()
+            integrations = _get_installed_integrations(remote_id)
             integration = next(
                 (i for i in integrations if i.driver_id == driver_id), None
             )
 
             if integration:
-                settings = Settings.load()
+                settings = Settings.load(remote_id=get_active_remote_id())
                 return render_template(
                     "partials/integration_card.html",
                     integration=integration,
@@ -2646,12 +2776,12 @@ def get_update_confirmation(driver_id: str):
 
     Returns HTML warning that configuration cannot be preserved.
     """
-    if not _remote_client:
+    if not _get_active_remote_client():
         return "<p class='text-red-600 dark:text-red-400'>Service not initialized</p>"
 
     try:
         # Get integration details
-        integrations = _get_installed_integrations()
+        integrations = _get_installed_integrations(get_active_remote_id())
         integration = next((i for i in integrations if i.driver_id == driver_id), None)
 
         if not integration:
@@ -2711,17 +2841,18 @@ def get_delete_confirmation(driver_id: str):
 
     Returns HTML to be displayed in the modal with delete options.
     """
-    if not _remote_client:
+    if not _get_active_remote_client():
         return "<p class='text-red-600 dark:text-red-400'>Service not initialized</p>"
 
     try:
         # Get integration name for display
-        integrations = _get_installed_integrations()
+        remote_id = get_active_remote_id()
+        integrations = _get_installed_integrations(remote_id)
         integration = next((i for i in integrations if i.driver_id == driver_id), None)
 
         # Also check available list for unconfigured drivers
         if not integration:
-            available = _get_available_integrations()
+            available = _get_available_integrations(remote_id)
             integration = next((i for i in available if i.driver_id == driver_id), None)
 
         integration_name = integration.name if integration else driver_id
@@ -2758,9 +2889,10 @@ def delete_integration(driver_id: str):
     Query parameters:
     - type: 'configuration' or 'full'
     """
-    if not _remote_client:
+    if not _get_active_remote_client():
         return jsonify({"status": "error", "message": "Service not initialized"}), 500
 
+    remote_id = get_active_remote_id()
     delete_type = request.args.get("type", "configuration")
     _LOG.info("Delete request for %s: type=%s", driver_id, delete_type)
 
@@ -2770,17 +2902,20 @@ def delete_integration(driver_id: str):
         instance_id = f"{driver_id}.main"
 
         try:
-            instances = _remote_client.get_integrations()
+            remote_id = get_active_remote_id()
+            integrations = _get_installed_integrations(remote_id)
+            # Check if any integration has this instance_id and is not NOT_CONFIGURED
             is_configured = any(
-                i.get("integration_id") == instance_id for i in instances
+                i.instance_id == instance_id and i.state != "NOT_CONFIGURED"
+                for i in integrations
             )
-        except SyncAPIError:
+        except Exception:
             pass
 
         # Only delete instance if it's actually configured
         if is_configured:
             try:
-                _remote_client.delete_instance(instance_id)
+                _get_active_remote_client().delete_instance(instance_id)
                 _LOG.info("Deleted instance: %s", instance_id)
             except SyncAPIError as e:
                 _LOG.warning("Failed to delete instance %s: %s", instance_id, e)
@@ -2791,7 +2926,7 @@ def delete_integration(driver_id: str):
             time.sleep(API_DELAY * 2)
 
             try:
-                _remote_client.delete_driver(driver_id)
+                _get_active_remote_client().delete_driver(driver_id)
                 _LOG.info("Deleted driver: %s", driver_id)
             except SyncAPIError as e:
                 _LOG.error("Failed to delete driver %s: %s", driver_id, e)
@@ -2815,8 +2950,12 @@ def delete_integration(driver_id: str):
             if registry_item:
                 # Driver is in registry - construct available_card showing uninstalled state
                 # Build AvailableIntegration from registry data
-                settings = Settings.load()
-                remote_ip = _remote_client._address if _remote_client else None
+                settings = Settings.load(remote_id=get_active_remote_id())
+                remote_ip = (
+                    _get_active_remote_client()._address
+                    if _get_active_remote_client()
+                    else None
+                )
 
                 available_integration = AvailableIntegration(
                     driver_id=registry_item.get("driver_id", ""),
@@ -2850,14 +2989,18 @@ def delete_integration(driver_id: str):
             return "", 200
         else:
             # Configuration delete - return updated card showing unconfigured state
-            integrations = _get_installed_integrations()
+            integrations = _get_installed_integrations(remote_id)
             integration = next(
                 (i for i in integrations if i.driver_id == driver_id), None
             )
 
             if integration:
-                settings = Settings.load()
-                remote_ip = _remote_client._address if _remote_client else None
+                settings = Settings.load(remote_id=remote_id)
+                remote_ip = (
+                    _get_active_remote_client()._address
+                    if _get_active_remote_client()
+                    else None
+                )
                 return render_template(
                     "partials/integration_card.html",
                     integration=integration,
@@ -2900,7 +3043,9 @@ def _build_error_card(driver_id: str, registry: list, error_msg: str) -> str:
         can_update=False,
     )
 
-    remote_ip = _remote_client._address if _remote_client else None
+    remote_ip = (
+        _get_active_remote_client()._address if _get_active_remote_client() else None
+    )
     return render_template(
         "partials/available_card.html",
         integration=integration,
@@ -2923,7 +3068,7 @@ def install_integration(driver_id: str):
     4. Validate against migration boundary if version specified
     5. Upload and install on the remote
     """
-    if not _remote_client or not _github_client:
+    if not _get_active_remote_client() or not _github_client:
         return jsonify({"status": "error", "message": "Service not initialized"}), 500
 
     # Get optional version parameter from query string or form data
@@ -3058,7 +3203,7 @@ def install_integration(driver_id: str):
         _LOG.info("Downloaded %s (%d bytes) for install", filename, len(archive_data))
 
         # Install the integration
-        _remote_client.install_integration(archive_data, filename)
+        _get_active_remote_client().install_integration(archive_data, filename)
         _LOG.info("Installed integration %s successfully", integration.get("name"))
 
         # Release operation lock
@@ -3089,7 +3234,11 @@ def install_integration(driver_id: str):
             can_update=False,
         )
 
-        remote_ip = _remote_client._address if _remote_client else None
+        remote_ip = (
+            _get_active_remote_client()._address
+            if _get_active_remote_client()
+            else None
+        )
         return render_template(
             "partials/available_card.html",
             integration=integration_obj,
@@ -3132,11 +3281,12 @@ def backup_all():
 
     This triggers the backup flow for all CUSTOM driver types.
     """
-    if not _remote_client:
+    client = _get_active_remote_client()
+    if not client:
         return jsonify({"status": "error", "message": "Service not initialized"}), 500
 
     try:
-        results = backup_all_integrations(_remote_client)
+        results = backup_all_integrations(client, remote_id=get_active_remote_id())
         successful = sum(1 for v in results.values() if v)
         failed = sum(1 for v in results.values() if not v)
 
@@ -3159,13 +3309,19 @@ def backup_single(driver_id: str):
 
     :param driver_id: The driver ID to backup
     """
-    if not _remote_client:
+    client = _get_active_remote_client()
+    if not client:
         return jsonify({"status": "error", "message": "Service not initialized"}), 500
 
     _LOG.info("Starting backup for integration: %s", driver_id)
 
     try:
-        backup_data = backup_integration(_remote_client, driver_id, save_to_file=True)
+        backup_data = backup_integration(
+            client,
+            driver_id,
+            save_to_file=True,
+            remote_id=get_active_remote_id(),
+        )
         if backup_data:
             _LOG.info("Backup completed successfully for integration: %s", driver_id)
             return jsonify(
@@ -3196,7 +3352,7 @@ def get_backup_data(driver_id: str):
 
     :param driver_id: The driver ID
     """
-    backup_data = get_backup(driver_id)
+    backup_data = get_backup(driver_id, remote_id=get_active_remote_id())
     if backup_data:
         return jsonify(
             {
@@ -3346,7 +3502,7 @@ def get_version_selector(owner: str, repo: str, driver_id: str):
 
     try:
         # Load settings to check show_beta_releases
-        settings = Settings.load()
+        settings = Settings.load(remote_id=get_active_remote_id())
         show_beta_releases = settings.show_beta_releases
 
         # Load registry to get migration_required_at
@@ -3364,7 +3520,7 @@ def get_version_selector(owner: str, repo: str, driver_id: str):
             _LOG.warning("Failed to load registry for migration check: %s", e)
 
         # Check if this is an update (driver installed) or fresh install
-        integrations = _get_installed_integrations()
+        integrations = _get_installed_integrations(get_active_remote_id())
         integration = next((i for i in integrations if i.driver_id == driver_id), None)
 
         if integration:
@@ -3496,13 +3652,14 @@ def check_versions():
 
     This refreshes the cached version data from GitHub.
     """
-    if not _remote_client or not _github_client:
+    if not _get_active_remote_client() or not _github_client:
         return jsonify({"status": "error", "message": "Service not initialized"}), 500
 
     try:
         _LOG.info("Manual version check triggered")
 
-        integrations = _get_installed_integrations()
+        remote_id = get_active_remote_id()
+        integrations = _get_installed_integrations(remote_id)
         version_updates = {}
         checked = 0
         updates_available = 0
@@ -3520,7 +3677,9 @@ def check_versions():
                     continue
 
                 owner, repo = parsed
-                release = _get_latest_release_for_update(owner, repo)
+                release = _get_latest_release_for_update(
+                    owner, repo, get_active_remote_id()
+                )
                 if release:
                     latest_version = release.get("tag_name", "")
                     current_version = integration.version or ""
@@ -3537,14 +3696,14 @@ def check_versions():
                     if has_update:
                         updates_available += 1
                         # Send notification for update available
-                        _LOG.info(
-                            "Update available for %s: %s -> %s",
-                            integration.name,
-                            current_version,
-                            latest_version,
-                        )
+                        # _LOG.info(
+                        #     "Update available for %s: %s -> %s",
+                        #     integration.name,
+                        #     current_version,
+                        #     latest_version,
+                        # )
                         try:
-                            nm = get_notification_manager()
+                            nm = get_notification_manager(get_active_remote_id())
                             _LOG.info(
                                 "Calling send_notification_sync for %s",
                                 integration.name,
@@ -3602,11 +3761,11 @@ def get_versions():
 @app.route("/api/status")
 def get_status():
     """Get current system status as JSON."""
-    if not _remote_client:
+    if not _get_active_remote_client():
         return jsonify({"error": "Service not initialized"})
 
     try:
-        is_docked = _remote_client.is_docked()
+        is_docked = _get_active_remote_client().is_docked()
         return jsonify({"docked": is_docked, "server": "running"})
     except Exception as e:
         return jsonify({"error": str(e)})
@@ -3615,11 +3774,11 @@ def get_status():
 @app.route("/api/status/html")
 def get_status_html():
     """Get current system status as HTML badges."""
-    if not _remote_client:
+    if not _get_active_remote_client():
         return '<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-600 dark:bg-red-500/20 text-white dark:text-red-300">Not Connected</span>'
 
     try:
-        is_docked = _remote_client.is_docked()
+        is_docked = _get_active_remote_client().is_docked()
         docked_badge = (
             '<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-700 dark:bg-green-500/20 text-white dark:text-green-300">'
             '<i class="fa-regular fa-charging-station mr-1.5"></i>Docked</span>'
@@ -3644,7 +3803,8 @@ def get_status_html():
 @app.route("/settings")
 def settings_page():
     """Render the settings page."""
-    settings = Settings.load()
+    settings = Settings.load(remote_id=get_active_remote_id())
+    ui_prefs = UIPreferences.load()
     # Detect if running in Docker/external mode
     uc_config_home = os.getenv("UC_CONFIG_HOME", "")
     is_external = uc_config_home.startswith("/config")
@@ -3654,7 +3814,10 @@ def settings_page():
     return render_template(
         "settings.html",
         settings=settings,
-        remote_address=_remote_client._address if _remote_client else None,
+        ui_prefs=ui_prefs,
+        remote_address=_get_active_remote_client()._address
+        if _get_active_remote_client()
+        else None,
         web_server_port=WEB_SERVER_PORT,
         is_external=is_external,
     )
@@ -3664,7 +3827,8 @@ def settings_page():
 def save_settings():
     """Save settings from form submission."""
     try:
-        settings = Settings.load()
+        settings = Settings.load(remote_id=get_active_remote_id())
+        ui_prefs = UIPreferences.load()
 
         # Update settings from form data (checkboxes only send value if checked)
         settings.shutdown_on_battery = request.form.get("shutdown_on_battery") == "on"
@@ -3679,7 +3843,8 @@ def save_settings():
         if backup_time:
             settings.backup_time = backup_time
 
-        settings.save()
+        settings.save(remote_id=get_active_remote_id())
+        ui_prefs.save()
 
         return """
         <div class="flex items-center gap-2 text-green-400">
@@ -3700,31 +3865,32 @@ def save_settings():
 @app.route("/api/settings", methods=["GET"])
 def get_settings():
     """Get current settings as JSON."""
-    settings = Settings.load()
+    settings = Settings.load(remote_id=get_active_remote_id())
     return jsonify(settings.to_dict())
 
 
 @app.route("/api/settings/sort", methods=["GET"])
 def get_sort_settings():
     """Get current sort settings as JSON."""
-    settings = Settings.load()
-    return jsonify({"sort_by": settings.sort_by, "sort_reverse": settings.sort_reverse})
+    ui_prefs = UIPreferences.load()
+    return jsonify({"sort_by": ui_prefs.sort_by, "sort_reverse": ui_prefs.sort_reverse})
 
 
 @app.route("/api/settings/sort", methods=["POST"])
 def update_sort_settings():
     """Update sort settings and return refreshed available integrations list."""
     try:
-        settings = Settings.load()
-        settings.sort_by = request.form.get("sort_by", "stars")
+        ui_prefs = UIPreferences.load()
+        ui_prefs.sort_by = request.form.get("sort_by", "stars")
         # Convert string 'true'/'false' to boolean
         sort_reverse_str = request.form.get("sort_reverse", "false")
-        settings.sort_reverse = sort_reverse_str == "true"
-        settings.save()
+        ui_prefs.sort_reverse = sort_reverse_str == "true"
+        ui_prefs.save()
 
         # Return refreshed available integrations with new sort
-        available = _get_available_integrations()
-        remote_ip = _remote_client._address if _remote_client else None
+        available = _get_available_integrations(get_active_remote_id())
+        client = _get_active_remote_client()
+        remote_ip = client._address if client else None
         return render_template(
             "partials/available_list.html",
             integrations=available,
@@ -3736,6 +3902,102 @@ def update_sort_settings():
 
 
 # ============================================================================
+# Remote Switching Routes
+# ============================================================================
+
+
+@app.route("/api/active-remote", methods=["GET"])
+def get_active_remote():
+    """Get current active remote information."""
+    remote_id = get_active_remote_id()
+    if not remote_id or remote_id not in _remote_configs:
+        return jsonify({"error": "No active remote"}), 404
+
+    config = _remote_configs[remote_id]
+    client = _remote_clients.get(remote_id)
+
+    # Test connection
+    connected = False
+    if client:
+        try:
+            connected = client.test_connection()
+        except Exception:
+            pass
+
+    return jsonify(
+        {
+            "id": remote_id,
+            "name": config.name,
+            "address": config.address,
+            "connected": connected,
+        }
+    )
+
+
+@app.route("/api/active-remote", methods=["POST"])
+def set_active_remote():
+    """Switch active remote via session."""
+    try:
+        data = request.get_json()
+        remote_id = data.get("remote_id")
+
+        if not remote_id:
+            return jsonify({"error": "remote_id required"}), 400
+
+        if remote_id not in _remote_clients:
+            return jsonify({"error": "Invalid remote_id"}), 400
+
+        # Update session
+        session["active_remote_id"] = remote_id
+        session.permanent = True
+
+        _LOG.info(
+            "Switched active remote to: %s (%s)", remote_id, _get_remote_name(remote_id)
+        )
+
+        return jsonify(
+            {
+                "status": "ok",
+                "active_remote_id": remote_id,
+                "remote_name": _get_remote_name(remote_id),
+            }
+        )
+    except Exception as e:
+        _LOG.error("Failed to switch active remote: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/remotes/list")
+def get_remotes_list():
+    """Get list of all configured remotes with connection status."""
+    active_id = get_active_remote_id()
+    remotes = []
+
+    for remote_id, config in _remote_configs.items():
+        client = _remote_clients.get(remote_id)
+
+        # Test connection
+        connected = False
+        if client:
+            try:
+                connected = client.test_connection()
+            except Exception:
+                pass
+
+        remotes.append(
+            {
+                "id": remote_id,
+                "name": config.name,
+                "address": config.address,
+                "active": remote_id == active_id,
+                "connected": connected,
+            }
+        )
+
+    return render_template("partials/remote_selector_dropdown.html", remotes=remotes)
+
+
+# ============================================================================
 # Notification Routes
 # ============================================================================
 
@@ -3744,7 +4006,7 @@ def update_sort_settings():
 def notifications_page():
     """Render the notifications settings page."""
 
-    notification_settings = NotificationSettings.load()
+    notification_settings = NotificationSettings.load(remote_id=get_active_remote_id())
     return render_template(
         "notifications.html",
         notification_settings=notification_settings,
@@ -3757,7 +4019,7 @@ def save_home_assistant_settings():
 
     try:
         data = request.get_json()
-        settings = NotificationSettings.load()
+        settings = NotificationSettings.load(remote_id=get_active_remote_id())
 
         settings.home_assistant = HomeAssistantNotificationConfig(
             enabled=data.get("enabled", False),
@@ -3765,7 +4027,7 @@ def save_home_assistant_settings():
             token=data.get("token", ""),
         )
 
-        settings.save()
+        settings.save(remote_id=get_active_remote_id())
         _LOG.info("Home Assistant notification settings saved")
         return jsonify({"success": True})
     except Exception as e:
@@ -3778,7 +4040,7 @@ def test_home_assistant_notification():
     """Send a test notification to Home Assistant."""
 
     try:
-        settings = NotificationSettings.load()
+        settings = NotificationSettings.load(remote_id=get_active_remote_id())
 
         # Temporarily enable for testing
         test_config = HomeAssistantNotificationConfig(
@@ -3815,7 +4077,7 @@ def save_webhook_settings():
 
     try:
         data = request.get_json()
-        settings = NotificationSettings.load()
+        settings = NotificationSettings.load(remote_id=get_active_remote_id())
 
         settings.webhook = WebhookNotificationConfig(
             enabled=data.get("enabled", False),
@@ -3823,7 +4085,7 @@ def save_webhook_settings():
             headers=data.get("headers", {}),
         )
 
-        settings.save()
+        settings.save(remote_id=get_active_remote_id())
         _LOG.info("Webhook notification settings saved")
         return jsonify({"success": True})
     except Exception as e:
@@ -3836,7 +4098,7 @@ def test_webhook_notification():
     """Send a test notification via webhook."""
 
     try:
-        settings = NotificationSettings.load()
+        settings = NotificationSettings.load(remote_id=get_active_remote_id())
 
         # Temporarily enable for testing
         test_config = WebhookNotificationConfig(
@@ -3874,7 +4136,7 @@ def save_pushover_settings():
 
     try:
         data = request.get_json()
-        settings = NotificationSettings.load()
+        settings = NotificationSettings.load(remote_id=get_active_remote_id())
 
         settings.pushover = PushoverNotificationConfig(
             enabled=data.get("enabled", False),
@@ -3882,7 +4144,7 @@ def save_pushover_settings():
             app_token=data.get("app_token", ""),
         )
 
-        settings.save()
+        settings.save(remote_id=get_active_remote_id())
         _LOG.info("Pushover notification settings saved")
         return jsonify({"success": True})
     except Exception as e:
@@ -3895,7 +4157,7 @@ def test_pushover_notification():
     """Send a test notification via Pushover."""
 
     try:
-        settings = NotificationSettings.load()
+        settings = NotificationSettings.load(remote_id=get_active_remote_id())
 
         # Temporarily enable for testing
         test_config = PushoverNotificationConfig(
@@ -3932,7 +4194,7 @@ def save_ntfy_settings():
 
     try:
         data = request.get_json()
-        settings = NotificationSettings.load()
+        settings = NotificationSettings.load(remote_id=get_active_remote_id())
 
         settings.ntfy = NtfyNotificationConfig(
             enabled=data.get("enabled", False),
@@ -3941,7 +4203,7 @@ def save_ntfy_settings():
             token=data.get("token", ""),
         )
 
-        settings.save()
+        settings.save(remote_id=get_active_remote_id())
         _LOG.info("ntfy notification settings saved")
         return jsonify({"success": True})
     except Exception as e:
@@ -3954,7 +4216,7 @@ def test_ntfy_notification():
     """Send a test notification via ntfy."""
 
     try:
-        settings = NotificationSettings.load()
+        settings = NotificationSettings.load(remote_id=get_active_remote_id())
 
         # Temporarily enable for testing
         test_config = NtfyNotificationConfig(
@@ -3993,14 +4255,14 @@ def save_discord_settings():
 
     try:
         data = request.get_json()
-        settings = NotificationSettings.load()
+        settings = NotificationSettings.load(remote_id=get_active_remote_id())
 
         settings.discord = DiscordNotificationConfig(
             enabled=data.get("enabled", False),
             webhook_url=data.get("webhook_url", ""),
         )
 
-        settings.save()
+        settings.save(remote_id=get_active_remote_id())
         _LOG.info("Discord notification settings saved")
         return jsonify({"success": True})
     except Exception as e:
@@ -4013,7 +4275,7 @@ def test_discord_notification():
     """Send a test notification via Discord."""
 
     try:
-        settings = NotificationSettings.load()
+        settings = NotificationSettings.load(remote_id=get_active_remote_id())
 
         # Temporarily enable for testing
         test_config = DiscordNotificationConfig(
@@ -4052,7 +4314,7 @@ def save_notification_triggers():
         if not data:
             return jsonify({"success": False, "error": "No data provided"}), 400
 
-        settings = NotificationSettings.load()
+        settings = NotificationSettings.load(remote_id=get_active_remote_id())
 
         # Update trigger settings
         settings.triggers = NotificationTriggers(
@@ -4062,7 +4324,7 @@ def save_notification_triggers():
             orphaned_entities_detected=data.get("orphaned_entities_detected", True),
         )
 
-        settings.save()
+        settings.save(remote_id=get_active_remote_id())
 
         _LOG.info("Notification trigger preferences saved")
         return jsonify({"success": True})
@@ -4123,7 +4385,7 @@ def clear_logs():
 @app.route("/integration-logs")
 def integration_logs_page():
     """Render the integration logs page."""
-    if not _remote_client:
+    if not _get_active_remote_client():
         return render_template(
             "integration_logs.html",
             services=[],
@@ -4133,7 +4395,7 @@ def integration_logs_page():
 
     try:
         # Get available log services from the remote
-        services = _remote_client.get_log_services()
+        services = _get_active_remote_client().get_log_services()
 
         _LOG.debug("Fetched %d total log services from remote", len(services))
 
@@ -4149,11 +4411,10 @@ def integration_logs_page():
         )
 
         # Get integrations to match driver names for custom services
-        integrations = _remote_client.get_integrations()
+        remote_id = get_active_remote_id()
+        integrations = _get_installed_integrations(remote_id)
         integration_map = {
-            intg.get("driver_id"): intg.get("name", {}).get("en", "")
-            for intg in integrations
-            if intg.get("driver_id")
+            intg.driver_id: intg.name for intg in integrations if intg.driver_id
         }
 
         # Enrich custom services with driver names
@@ -4194,7 +4455,7 @@ def integration_logs_page():
 @app.route("/api/integration-logs/entries")
 def get_integration_logs_entries():
     """Get integration log entries as HTML partial for HTMX."""
-    if not _remote_client:
+    if not _get_active_remote_client():
         return render_template("partials/integration_log_entries.html", entries=[])
 
     service = request.args.get("service", "")
@@ -4212,7 +4473,7 @@ def get_integration_logs_entries():
 
     try:
         # Fetch logs from the remote for the specified service and priority
-        logs = _remote_client.get_logs(
+        logs = _get_active_remote_client().get_logs(
             priority=priority,
             service=service,
             limit=1000,
@@ -4228,7 +4489,7 @@ def get_integration_logs_entries():
 @app.route("/api/integration-logs/download")
 def download_integration_logs():
     """Download integration logs as a text file."""
-    if not _remote_client:
+    if not _get_active_remote_client():
         return "Not connected to remote", 500
 
     service = request.args.get("service", "")
@@ -4246,7 +4507,7 @@ def download_integration_logs():
 
     try:
         # Fetch logs as text export with specified priority
-        log_text = _remote_client.get_logs(
+        log_text = _get_active_remote_client().get_logs(
             priority=priority,
             service=service,
             limit=10000,  # Maximum allowed
@@ -4305,19 +4566,20 @@ def inject_system_messages_count():
 @app.context_processor
 def inject_orphaned_entities_count():
     """Inject orphaned entities and IR codesets count into all templates."""
-    if not _remote_client:
+    client = _get_active_remote_client()
+    if not client:
         return {"orphaned_entities_count": 0}
 
     try:
         # Count orphaned entities by activity
-        orphaned_entities = _remote_client.find_orphan_entities()
+        orphaned_entities = client.find_orphan_entities()
         activity_ids = set()
         for entity in orphaned_entities:
             activity_id = entity.get("activity_id")
             if activity_id:
                 activity_ids.add(activity_id)
 
-        orphaned_codesets = find_orphaned_ir_codesets(_remote_client)
+        orphaned_codesets = find_orphaned_ir_codesets(client)
 
         # Total count is activities + IR codesets
         total_count = len(activity_ids) + len(orphaned_codesets)
@@ -4385,21 +4647,23 @@ def diagnostics_page():
     """Render the diagnostics page."""
     return render_template(
         "diagnostics.html",
-        remote_address=_remote_client._address if _remote_client else "localhost",
+        remote_address=_get_active_remote_client()._address
+        if _get_active_remote_client()
+        else "localhost",
     )
 
 
 @app.route("/api/diagnostics/orphaned-entities")
 def get_orphaned_entities():
     """Get orphaned entities data as HTML partial for HTMX."""
-    if not _remote_client:
+    if not _get_active_remote_client():
         return render_template(
             "partials/orphaned_entities.html",
             orphaned_entities=[],
         )
 
     try:
-        orphaned_entities = _remote_client.find_orphan_entities()
+        orphaned_entities = _get_active_remote_client().find_orphan_entities()
         _LOG.debug("Orphaned entities data: %s", orphaned_entities)
 
         # Group entities by activity for display
@@ -4431,7 +4695,11 @@ def get_orphaned_entities():
 
             activities[activity_id]["entities"].append(entity_copy)
 
-        remote_ip = _remote_client._address if _remote_client else None
+        remote_ip = (
+            _get_active_remote_client()._address
+            if _get_active_remote_client()
+            else None
+        )
         return render_template(
             "partials/orphaned_entities.html",
             activities=activities,
@@ -4456,14 +4724,15 @@ def get_orphaned_entities():
 @app.route("/api/diagnostics/orphaned-ir-codesets")
 def get_orphaned_ir_codesets():
     """Get orphaned IR codesets data as HTML partial for HTMX."""
-    if not _remote_client:
+    client = _get_active_remote_client()
+    if not client:
         return render_template(
             "partials/orphaned_ir_codesets.html",
             orphaned_codesets=[],
         )
 
     try:
-        orphaned_codesets = find_orphaned_ir_codesets(_remote_client)
+        orphaned_codesets = find_orphaned_ir_codesets(client)
         _LOG.debug("Found %d orphaned IR codesets", len(orphaned_codesets))
 
         return render_template(
@@ -4501,11 +4770,11 @@ def ir_codeset_delete_confirm(device_id: str):
 @app.route("/api/ir/codesets/<device_id>", methods=["DELETE"])
 def delete_ir_codeset(device_id: str):
     """Delete a custom IR codeset."""
-    if not _remote_client:
+    if not _get_active_remote_client():
         return jsonify({"error": "Not connected to remote"}), 500
 
     try:
-        _remote_client.delete_custom_ir_codeset(device_id)
+        _get_active_remote_client().delete_custom_ir_codeset(device_id)
         _LOG.info("Deleted IR codeset: %s", device_id)
         # Return empty response to remove the element from DOM
         return "", 200
@@ -4517,7 +4786,7 @@ def delete_ir_codeset(device_id: str):
 @app.route("/api/ir/codesets/reassociate", methods=["POST"])
 def reassociate_ir_codeset():
     """Create a new remote associated with a custom IR codeset."""
-    if not _remote_client:
+    if not _get_active_remote_client():
         return jsonify({"error": "Not connected to remote"}), 500
 
     try:
@@ -4534,7 +4803,7 @@ def reassociate_ir_codeset():
             return jsonify({"error": "Missing device_id or remote_name"}), 400
 
         # Create remote with custom codeset ID
-        _remote_client.create_remote(remote_name, device_id)
+        _get_active_remote_client().create_remote(remote_name, device_id)
 
         _LOG.info("Created remote '%s' for codeset %s", remote_name, device_id)
         # Return empty response to remove the element from DOM
@@ -4547,11 +4816,11 @@ def reassociate_ir_codeset():
 @app.route("/api/system/reboot", methods=["POST"])
 def system_reboot():
     """Reboot the remote."""
-    if not _remote_client:
+    if not _get_active_remote_client():
         return jsonify({"error": "Not connected to remote"}), 500
 
     try:
-        _remote_client.reboot_remote()
+        _get_active_remote_client().reboot_remote()
         return jsonify({"success": True, "message": "Reboot command sent"}), 200
     except SyncAPIError as e:
         _LOG.error("Failed to reboot remote: %s", e)
@@ -4561,11 +4830,11 @@ def system_reboot():
 @app.route("/api/system/power-off", methods=["POST"])
 def system_power_off():
     """Power off the remote."""
-    if not _remote_client:
+    if not _get_active_remote_client():
         return jsonify({"error": "Not connected to remote"}), 500
 
     try:
-        _remote_client.power_off_remote()
+        _get_active_remote_client().power_off_remote()
         return jsonify({"success": True, "message": "Power off command sent"}), 200
     except SyncAPIError as e:
         _LOG.error("Failed to power off remote: %s", e)
@@ -4576,7 +4845,10 @@ def system_power_off():
 def create_backup_now():
     """Create a backup of all integration configs that support backup."""
     try:
-        if not _remote_client:
+        remote_id = get_active_remote_id()
+        client = _get_active_remote_client()
+
+        if not client:
             return """<div class="text-red-600 dark:text-red-400">Not connected to remote</div>"""
 
         # Load registry to check which integrations support backup
@@ -4587,20 +4859,21 @@ def create_backup_now():
                 registry_by_driver_id[item["driver_id"]] = item
             registry_by_driver_id[item["id"]] = item
 
-        # Get installed integrations
-        integrations = _remote_client.get_integrations()
+        # Get installed integrations using the helper function
+        integrations = _get_installed_integrations(remote_id)
 
         backed_up = []
         skipped = []
         failed = []
 
-        for instance in integrations:
-            driver_id = instance.get("driver_id", "")
-            name = instance.get("name", {})
-            if isinstance(name, dict):
-                name = name.get("en", driver_id)
+        for integration in integrations:
+            driver_id = integration.driver_id
+            name = integration.name
+            version = integration.version
 
-            version = instance.get("version", "0.0.0")
+            # Skip unconfigured integrations
+            if integration.state == "NOT_CONFIGURED":
+                continue
 
             # Check if this integration supports backup and meets version requirements
             reg_item = registry_by_driver_id.get(driver_id)
@@ -4615,7 +4888,10 @@ def create_backup_now():
 
             # Try to backup
             backup_data = backup_integration(
-                _remote_client, driver_id, save_to_file=True
+                client,
+                driver_id,
+                save_to_file=True,
+                remote_id=remote_id,
             )
             if backup_data:
                 backed_up.append(name)
@@ -4651,8 +4927,12 @@ def create_backup_now():
 def list_backups():
     """List available integration backups."""
     try:
+        remote_id = get_active_remote_id()
         backups_data = get_all_backups()
-        backups = backups_data.get("integrations", {})
+        # Get backups for the active remote
+        backups = (
+            backups_data.get("remotes", {}).get(remote_id, {}).get("integrations", {})
+        )
 
         if not backups:
             return (
@@ -4700,8 +4980,14 @@ def list_backups():
 def get_delete_backup_confirm(driver_id: str):
     """Get confirmation modal for deleting a backup."""
     try:
+        remote_id = get_active_remote_id()
         backups_data = get_all_backups()
-        backup_info = backups_data.get("integrations", {}).get(driver_id, {})
+        backup_info = (
+            backups_data.get("remotes", {})
+            .get(remote_id, {})
+            .get("integrations", {})
+            .get(driver_id, {})
+        )
         timestamp = backup_info.get("timestamp", "Unknown")
 
         # Format the timestamp nicely
@@ -4729,7 +5015,7 @@ def get_delete_backup_confirm(driver_id: str):
 def view_backup(driver_id: str):
     """View backup data for a specific driver."""
     try:
-        backup_data = get_backup(driver_id)
+        backup_data = get_backup(driver_id, remote_id=get_active_remote_id())
 
         if not backup_data:
             return "<div class='text-gray-600 dark:text-gray-400'>No backup data found</div>"
@@ -4762,7 +5048,7 @@ def view_backup(driver_id: str):
 def delete_backup_entry(driver_id: str):
     """Delete a backup for a specific driver."""
     try:
-        delete_backup(driver_id)
+        delete_backup(driver_id, remote_id=get_active_remote_id())
         return list_backups()  # Return updated list
     except Exception as e:
         _LOG.error("Failed to delete backup: %s", e)
@@ -4775,7 +5061,7 @@ def download_complete_backup():
 
     try:
         # Get current settings
-        settings = Settings.load()
+        settings = Settings.load(remote_id=get_active_remote_id())
 
         # Get all integration backups
         backups_data = get_all_backups()
@@ -4783,7 +5069,9 @@ def download_complete_backup():
         # Ensure settings are included
         backups_data["settings"] = settings.to_dict()
 
-        notification_settings = NotificationSettings.load()
+        notification_settings = NotificationSettings.load(
+            remote_id=get_active_remote_id()
+        )
         backups_data["notification_settings"] = notification_settings.to_dict()
 
         # Create in-memory file for download
@@ -4831,54 +5119,113 @@ def upload_complete_backup():
                 }
             ), 400
 
-        # Restore settings if present
-        if "settings" in backup_data and backup_data["settings"]:
+        # Save uploaded backup temporarily and migrate if needed
+        active_remote_id = get_active_remote_id()
+        if active_remote_id is None:
+            return jsonify(
+                {"status": "error", "message": "No active remote selected"}
+            ), 400
+
+        # If v1.0 format, save it and run migration
+        if backup_data.get("version") == "1.0":
+            _LOG.info("Uploaded backup is v1.0 format, will migrate to v2.0")
+
+            # Save the v1.0 backup temporarily
             try:
-                settings = Settings(**backup_data["settings"])
-                settings.save()
-                _LOG.info("Restored settings from backup")
-            except Exception as e:
-                _LOG.warning("Failed to restore settings: %s", e)
+                with open(MANAGER_DATA_FILE, "w", encoding="utf-8") as f:
+                    json.dump(backup_data, f, indent=2)
+            except OSError as e:
+                return jsonify(
+                    {"status": "error", "message": f"Failed to save backup: {e}"}
+                ), 500
 
-        # Restore notification settings if present
-        if (
-            "notification_settings" in backup_data
-            and backup_data["notification_settings"]
-        ):
+            # Run the migration with the active remote ID
+            if not migrate_v1_to_v2(target_remote_id=active_remote_id):
+                return jsonify(
+                    {
+                        "status": "error",
+                        "message": "Failed to migrate v1.0 backup to v2.0 format",
+                    }
+                ), 500
+
+            # Reload the migrated data
             try:
-                notification_settings = NotificationSettings.load()
+                with open(MANAGER_DATA_FILE, "r", encoding="utf-8") as f:
+                    backup_data = json.load(f)
+            except (json.JSONDecodeError, OSError) as e:
+                return jsonify(
+                    {
+                        "status": "error",
+                        "message": f"Failed to reload migrated backup: {e}",
+                    }
+                ), 500
 
-                # Update from backup data
+            _LOG.info("Successfully migrated v1.0 backup to v2.0 format")
 
-                if "home_assistant" in backup_data["notification_settings"]:
-                    notification_settings.home_assistant = (
-                        HomeAssistantNotificationConfig(
-                            **backup_data["notification_settings"]["home_assistant"]
+        # Restore settings if present in v2.0 format
+        remotes_data = backup_data.get("remotes")
+        if isinstance(remotes_data, dict) and active_remote_id in remotes_data:
+            remote_data = remotes_data[active_remote_id]
+
+            if isinstance(remote_data, dict):
+                settings_data = remote_data.get("settings")
+                if isinstance(settings_data, dict) and settings_data:
+                    try:
+                        settings = Settings(**settings_data)
+                        settings.save(remote_id=active_remote_id)
+                        _LOG.info("Restored settings from backup")
+                    except Exception as e:
+                        _LOG.warning("Failed to restore settings: %s", e)
+
+                # Restore notification settings if present
+                notification_settings_data = remote_data.get("notification_settings")
+                if (
+                    isinstance(notification_settings_data, dict)
+                    and notification_settings_data
+                ):
+                    try:
+                        notification_settings = NotificationSettings.load(
+                            remote_id=active_remote_id
                         )
-                    )
-                if "webhook" in backup_data["notification_settings"]:
-                    notification_settings.webhook = WebhookNotificationConfig(
-                        **backup_data["notification_settings"]["webhook"]
-                    )
-                if "pushover" in backup_data["notification_settings"]:
-                    notification_settings.pushover = PushoverNotificationConfig(
-                        **backup_data["notification_settings"]["pushover"]
-                    )
-                if "ntfy" in backup_data["notification_settings"]:
-                    notification_settings.ntfy = NtfyNotificationConfig(
-                        **backup_data["notification_settings"]["ntfy"]
-                    )
-                if "discord" in backup_data["notification_settings"]:
-                    notification_settings.discord = DiscordNotificationConfig(
-                        **backup_data["notification_settings"]["discord"]
-                    )
 
-                notification_settings.save()
-                _LOG.info("Restored notification settings from backup")
-            except Exception as e:
-                _LOG.warning("Failed to restore notification settings: %s", e)
+                        # Update from backup data
+                        if "home_assistant" in notification_settings_data:
+                            ha_data = notification_settings_data["home_assistant"]
+                            if isinstance(ha_data, dict):
+                                notification_settings.home_assistant = (
+                                    HomeAssistantNotificationConfig(**ha_data)
+                                )
+                        if "webhook" in notification_settings_data:
+                            webhook_data = notification_settings_data["webhook"]
+                            if isinstance(webhook_data, dict):
+                                notification_settings.webhook = (
+                                    WebhookNotificationConfig(**webhook_data)
+                                )
+                        if "pushover" in notification_settings_data:
+                            pushover_data = notification_settings_data["pushover"]
+                            if isinstance(pushover_data, dict):
+                                notification_settings.pushover = (
+                                    PushoverNotificationConfig(**pushover_data)
+                                )
+                        if "ntfy" in notification_settings_data:
+                            ntfy_data = notification_settings_data["ntfy"]
+                            if isinstance(ntfy_data, dict):
+                                notification_settings.ntfy = NtfyNotificationConfig(
+                                    **ntfy_data
+                                )
+                        if "discord" in notification_settings_data:
+                            discord_data = notification_settings_data["discord"]
+                            if isinstance(discord_data, dict):
+                                notification_settings.discord = (
+                                    DiscordNotificationConfig(**discord_data)
+                                )
 
-        # Save the complete backup file (includes all integrations)
+                        notification_settings.save(remote_id=active_remote_id)
+                        _LOG.info("Restored notification settings from backup")
+                    except Exception as e:
+                        _LOG.warning("Failed to restore notification settings: %s", e)
+
+        # Save the complete backup file (now in v2.0 format)
         try:
             with open(MANAGER_DATA_FILE, "w", encoding="utf-8") as f:
                 json.dump(backup_data, f, indent=2)
@@ -4888,21 +5235,16 @@ def upload_complete_backup():
                 {"status": "error", "message": f"Failed to save backup: {e}"}
             ), 500
 
-        integration_count = len(backup_data.get("integrations", {}))
-        settings_restored = "settings" in backup_data and backup_data["settings"]
-        notification_settings_restored = (
-            "notification_settings" in backup_data
-            and backup_data["notification_settings"]
-        )
+        # Calculate integration count from v2.0 structure
+        integration_count = 0
+        if isinstance(remotes_data, dict) and active_remote_id in remotes_data:
+            remote_data = remotes_data[active_remote_id]
+            if isinstance(remote_data, dict):
+                integrations = remote_data.get("integrations", {})
+                if isinstance(integrations, dict):
+                    integration_count = len(integrations)
 
         message = f"Successfully restored {integration_count} integration backup(s)"
-        if settings_restored and notification_settings_restored:
-            message += ", settings, and notification settings"
-        elif settings_restored:
-            message += " and settings"
-        elif notification_settings_restored:
-            message += " and notification settings"
-
         return jsonify({"status": "ok", "message": message})
     except Exception as e:
         _LOG.error("Failed to upload backup: %s", e)
@@ -4923,42 +5265,47 @@ class WebServer:
 
     def __init__(
         self,
-        address: str,
-        pin: str | None = None,
-        api_key: str | None = None,
+        remote_configs: list[RemoteConfig],
         host: str = "0.0.0.0",
         port: int = WEB_SERVER_PORT,
     ) -> None:
         """
         Initialize the web server.
 
-        :param address: Remote IP address
-        :param pin: Remote PIN for auth
-        :param api_key: API key for auth
+        :param remote_configs: List of remote configurations to manage
         :param host: Host to bind to
         :param port: Port to listen on
         """
-        global _remote_client, _github_client, _user_language_code
+        global _remote_clients, _remote_configs, _github_client, _user_language_code
 
         self._host = host
         self._port = port
         self._server_thread: threading.Thread | None = None
         self._running = False
 
-        # Initialize sync API clients
-        _remote_client = SyncRemoteClient(
-            address=address,
-            pin=pin,
-            api_key=api_key,
-        )
+        # Initialize remote clients and configs
+        _remote_clients.clear()
+        _remote_configs.clear()
+        for config in remote_configs:
+            _remote_configs[config.identifier] = config
+            _remote_clients[config.identifier] = SyncRemoteClient(
+                address=config.address,
+                pin=config.pin,
+                api_key=config.api_key,
+            )
+
         _github_client = SyncGitHubClient()
 
-        # Fetch user's language preference
+        # Fetch user's language preference from first configured remote
+        # Note: Can't use _get_active_remote_client() here as Flask session isn't available during init
         try:
-            localization = _remote_client.get_localization()
-            if localization and localization.get("language_code"):
-                _user_language_code = localization["language_code"]
-                _LOG.info("User language set to: %s", _user_language_code)
+            if _remote_clients:
+                # Get first client for language preference
+                first_client = next(iter(_remote_clients.values()))
+                localization = first_client.get_localization()
+                if localization and localization.get("language_code"):
+                    _user_language_code = localization["language_code"]
+                    _LOG.info("User language set to: %s", _user_language_code)
         except Exception as e:
             _LOG.warning("Failed to fetch localization settings: %s", e)
 
@@ -5023,50 +5370,103 @@ class WebServer:
             self._server_thread.join(timeout=5)
             self._server_thread = None
 
+    def reload_remotes(self, remote_configs: list[RemoteConfig] | None = None) -> None:
+        """
+        Reload remote configurations dynamically without restarting the server.
+
+        This allows new remotes to be added through the setup flow or config.json
+        without requiring a full integration restart.
+
+        :param remote_configs: Updated list of all remote configurations.
+                              If None, will import and use device._all_remote_configs
+        """
+        global _remote_clients, _remote_configs
+
+        # If no configs provided, get them from the device module
+        if remote_configs is None:
+            try:
+                from device import _all_remote_configs as device_configs
+
+                remote_configs = device_configs
+                _LOG.info("Reloading remotes from device module")
+            except ImportError:
+                _LOG.error("Failed to import remote configs from device module")
+                return
+
+        _LOG.info(
+            "Reloading remote configurations (current: %d, new: %d)",
+            len(_remote_configs),
+            len(remote_configs),
+        )
+
+        # Clear and rebuild remote clients and configs
+        _remote_clients.clear()
+        _remote_configs.clear()
+
+        for config in remote_configs:
+            _remote_configs[config.identifier] = config
+            _remote_clients[config.identifier] = SyncRemoteClient(
+                address=config.address,
+                pin=config.pin,
+                api_key=config.api_key,
+            )
+            _LOG.info("Loaded remote: %s (%s)", config.name, config.identifier)
+
+        _LOG.info(
+            "Remote reload complete - %d remotes configured", len(_remote_clients)
+        )
+
     @property
     def is_running(self) -> bool:
         """Check if the web server is running."""
         return self._running
 
-    def refresh_integration_versions(self) -> None:
+    def refresh_integration_versions(self, remote_id: str) -> None:
         """
         Refresh version information for all installed integrations.
 
         This checks GitHub for the latest releases and updates the cached
         version data used by the UI.
-        """
-        _refresh_version_cache()
 
-    def check_error_states(self) -> None:
+        :param remote_id: Remote identifier to refresh versions for
+        """
+        _refresh_version_cache(remote_id)
+
+    def check_error_states(self, remote_id: str) -> None:
         """
         Check all integrations for error states and send notifications.
 
         This is called periodically to detect integrations that have entered
         error or disconnected states.
+
+        :param remote_id: Remote identifier to check error states for
         """
-        if not _remote_client:
+        client = _remote_clients.get(remote_id)
+        if not client:
             return
 
         try:
             # This will trigger error state notifications automatically
-            _get_installed_integrations()
-            _LOG.debug("Error state check complete")
+            _get_installed_integrations(remote_id)
+            # _LOG.debug("[%s] Error state check complete", remote_id)
         except Exception as e:
-            _LOG.warning("Failed to check error states: %s", e)
+            _LOG.warning("[%s] Failed to check error states: %s", remote_id, e)
 
-    def check_new_integrations(self) -> None:
+    def check_new_integrations(self, remote_id: str) -> None:
         """
         Check registry for new integrations and send notifications.
 
         This is called periodically to detect when new integrations are
         added to the registry.
+
+        :param remote_id: Remote identifier to check for new integrations
         """
         try:
             # This will trigger new integration notifications automatically
-            _get_available_integrations()
-            _LOG.debug("New integration check complete")
+            _get_available_integrations(remote_id)
+            _LOG.debug("[%s] New integration check complete", remote_id)
         except Exception as e:
-            _LOG.warning("Failed to check for new integrations: %s", e)
+            _LOG.warning("[%s] Failed to check for new integrations: %s", remote_id, e)
 
     def fetch_repository_batch(self) -> None:
         """
@@ -5110,12 +5510,20 @@ class WebServer:
             repos_cache = cache.get("repos", {})
             repos_to_fetch = []
 
+            # Count fresh vs stale cached repos for better logging
+            fresh_count = 0
+            stale_count = 0
+            valid_github_repos = (
+                0  # Count of repos with valid GitHub URLs (owner + repo)
+            )
+
             # Collect repos that need updating (expired or missing)
             for item in registry:
                 home_page = item.get("repository", "")
                 if home_page and "github.com" in home_page:
                     parsed = SyncGitHubClient.parse_github_url(home_page)
                     if parsed:
+                        valid_github_repos += 1
                         owner, repo = parsed
                         cache_key = f"{owner}/{repo}"
 
@@ -5126,12 +5534,18 @@ class WebServer:
                             cached_time = repos_cache[cache_key].get("cached_at", 0)
                             if now - cached_time >= REPO_CACHE_VALIDITY:
                                 repos_to_fetch.append((owner, repo, cache_key))
+                                stale_count += 1
+                            else:
+                                fresh_count += 1
 
             _LOG.info(
-                "Repository batch fetch: Found %d repos needing updates (total in registry: %d, cached: %d)",
+                "Repository batch fetch: Found %d repos needing updates (fresh: %d, stale: %d, missing: %d, valid GitHub repos: %d)",
                 len(repos_to_fetch),
-                len(registry),
-                len(repos_cache),
+                fresh_count,
+                stale_count,
+                len(repos_to_fetch)
+                - stale_count,  # Missing = total needing fetch - stale
+                valid_github_repos,
             )
 
             if not repos_to_fetch:
@@ -5194,20 +5608,24 @@ class WebServer:
         except Exception as e:
             _LOG.error("Failed to fetch repository batch: %s", e, exc_info=True)
 
-    def check_orphaned_entities(self) -> None:
+    def check_orphaned_entities(self, remote_id: str) -> None:
         """
         Check for orphaned entities in activities and send notifications.
 
         This is called periodically to detect orphaned entities that may
         prevent activities from functioning correctly.
+
+        :param remote_id: Remote identifier to check orphaned entities for
         """
-        if not _remote_client:
+        client = _remote_clients.get(remote_id)
+        if not client:
             return
 
         try:
-            orphaned_entities = _remote_client.find_orphan_entities()
+            orphaned_entities = client.find_orphan_entities()
             _LOG.debug(
-                "Found %d orphaned entities",
+                "[%s] Found %d orphaned entities",
+                remote_id,
                 len(orphaned_entities) if orphaned_entities else 0,
             )
 
@@ -5229,57 +5647,66 @@ class WebServer:
                     activity_ids = list(activities.keys())
 
                     _LOG.info(
-                        "Found %d activities with orphaned entities: %s",
+                        "[%s] Found %d activities with orphaned entities: %s",
+                        remote_id,
                         len(activity_names),
                         ", ".join(activity_names),
                     )
 
-                    # Send notification
-                    notification_manager = get_notification_manager()
+                    # Send notification (per-remote)
+                    notification_manager = get_notification_manager(remote_id)
                     send_notification_sync(
                         notification_manager.notify_orphaned_entities,
                         activity_names,
                         activity_ids,
                     )
-                    _LOG.debug("Orphaned entities notification sent")
+                    _LOG.debug("[%s] Orphaned entities notification sent", remote_id)
                 else:
-                    _LOG.debug("No activities with orphaned entities")
+                    _LOG.debug("[%s] No activities with orphaned entities", remote_id)
                     # Clear any previously notified activities if they're now resolved
-                    notification_manager = get_notification_manager()
+                    notification_manager = get_notification_manager(remote_id)
                     if notification_manager._notified_orphaned_activities:
                         notification_manager.clear_orphaned_activities(
                             list(notification_manager._notified_orphaned_activities)
                         )
             else:
-                _LOG.debug("No orphaned entities detected")
+                _LOG.debug("[%s] No orphaned entities detected", remote_id)
                 # Clear any previously notified activities
-                notification_manager = get_notification_manager()
+                notification_manager = get_notification_manager(remote_id)
                 if notification_manager._notified_orphaned_activities:
                     notification_manager.clear_orphaned_activities(
                         list(notification_manager._notified_orphaned_activities)
                     )
 
         except SyncAPIError as e:
-            _LOG.warning("Failed to check for orphaned entities: %s", e)
+            _LOG.warning("[%s] Failed to check for orphaned entities: %s", remote_id, e)
         except Exception as e:
-            _LOG.error("Unexpected error checking orphaned entities: %s", e)
+            _LOG.error(
+                "[%s] Unexpected error checking orphaned entities: %s", remote_id, e
+            )
 
-    async def check_orphaned_entities_async(self) -> None:
+    async def check_orphaned_entities_async(self, remote_id: str) -> None:
         """
         Check for orphaned entities in activities and send notifications (async version).
 
         This is called from async contexts like startup to detect orphaned entities
         that may prevent activities from functioning correctly.
+
+        :param remote_id: Remote identifier to check orphaned entities for
         """
-        if not _remote_client:
-            _LOG.debug("Skipping orphaned entities check - no remote client")
+        client = _remote_clients.get(remote_id)
+        if not client:
+            _LOG.debug(
+                "[%s] Skipping orphaned entities check - no remote client", remote_id
+            )
             return
 
         try:
-            _LOG.debug("Checking for orphaned entities...")
-            orphaned_entities = await _remote_client.find_orphan_entities_async()
+            _LOG.debug("[%s] Checking for orphaned entities...", remote_id)
+            orphaned_entities = await client.find_orphan_entities_async()
             _LOG.debug(
-                "Found %d orphaned entities",
+                "[%s] Found %d orphaned entities",
+                remote_id,
                 len(orphaned_entities) if orphaned_entities else 0,
             )
 
@@ -5308,7 +5735,7 @@ class WebServer:
 
                     # Send notification
                     _LOG.debug("Attempting to send orphaned entities notification...")
-                    notification_manager = get_notification_manager()
+                    notification_manager = get_notification_manager(remote_id)
                     await notification_manager.notify_orphaned_entities(
                         activity_names,
                         activity_ids,
@@ -5317,7 +5744,7 @@ class WebServer:
                 else:
                     _LOG.debug("No activities with orphaned entities")
                     # Clear any previously notified activities if they're now resolved
-                    notification_manager = get_notification_manager()
+                    notification_manager = get_notification_manager(remote_id)
                     if notification_manager._notified_orphaned_activities:
                         notification_manager.clear_orphaned_activities(
                             list(notification_manager._notified_orphaned_activities)
@@ -5325,7 +5752,7 @@ class WebServer:
             else:
                 _LOG.debug("No orphaned entities detected")
                 # Clear any previously notified activities
-                notification_manager = get_notification_manager()
+                notification_manager = get_notification_manager(remote_id)
                 if notification_manager._notified_orphaned_activities:
                     notification_manager.clear_orphaned_activities(
                         list(notification_manager._notified_orphaned_activities)
@@ -5355,18 +5782,22 @@ class WebServer:
         except Exception as e:
             _LOG.warning("Failed to check system messages: %s", e)
 
-    def perform_scheduled_backup(self) -> bool:
+    def perform_scheduled_backup(self, remote_id: str) -> bool:
         """
         Perform scheduled backup of all supported integrations.
 
+        :param remote_id: Remote identifier to backup integrations for
         :return: True if backup was successful, False otherwise
         """
-        if not _remote_client:
-            _LOG.warning("Cannot perform backup - remote client not initialized")
+        client = _remote_clients.get(remote_id)
+        if not client:
+            _LOG.warning(
+                "[%s] Cannot perform backup - remote client not initialized", remote_id
+            )
             return False
 
         try:
-            _LOG.info("Starting scheduled backup of integrations...")
+            _LOG.info("[%s] Starting scheduled backup of integrations...", remote_id)
 
             # Load registry to check which integrations support backup
             registry = load_registry()
@@ -5376,15 +5807,19 @@ class WebServer:
                     registry_by_driver_id[item["driver_id"]] = item
                 registry_by_driver_id[item["id"]] = item
 
-            # Get installed integrations
-            integrations = _remote_client.get_integrations()
+            # Get installed integrations for this remote
+            integrations = _get_installed_integrations(remote_id)
 
             backed_up_count = 0
             total_attempted = 0
 
-            for instance in integrations:
-                driver_id = instance.get("driver_id", "")
-                version = instance.get("version", "0.0.0")
+            for integration in integrations:
+                driver_id = integration.driver_id
+                version = integration.version
+
+                # Skip unconfigured integrations
+                if integration.state == "NOT_CONFIGURED":
+                    continue
 
                 # Check if this integration supports backup and meets version requirements
                 reg_item = registry_by_driver_id.get(driver_id)
@@ -5399,16 +5834,17 @@ class WebServer:
 
                 total_attempted += 1
 
-                # Try to backup
+                # Try to backup (with remote_id for namespacing)
                 backup_data = backup_integration(
-                    _remote_client, driver_id, save_to_file=True
+                    client, driver_id, save_to_file=True, remote_id=remote_id
                 )
                 if backup_data:
                     backed_up_count += 1
-                    _LOG.debug("Backed up integration: %s", driver_id)
+                    _LOG.debug("[%s] Backed up integration: %s", remote_id, driver_id)
 
             _LOG.info(
-                "Scheduled backup complete: %d/%d integrations backed up",
+                "[%s] Scheduled backup complete: %d/%d integrations backed up",
+                remote_id,
                 backed_up_count,
                 total_attempted,
             )

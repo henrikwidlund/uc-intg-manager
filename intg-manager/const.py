@@ -46,7 +46,6 @@ REPO_FETCH_BATCH_INTERVAL = 3600
 
 # System messages file - stores system announcements and notifications
 SYSTEM_MESSAGES_FILE = os.path.join(DATA_DIR, "system_messages.json")
-
 # System messages GitHub URL - remote source for messages
 SYSTEM_MESSAGES_URL = "https://raw.githubusercontent.com/JackJPowell/uc-intg-list/main/system_messages.json"
 
@@ -60,12 +59,78 @@ API_DELAY = (
 
 
 @dataclass
+class UIPreferences:
+    """UI preference settings shared across all remotes.
+
+    These preferences control UI behavior and are stored in the shared section
+    of manager.json in multi-remote setups.
+    """
+
+    sort_by: str = "stars"
+
+    sort_reverse: bool = False
+    """Reverse the sort order for available integrations."""
+
+    @classmethod
+    def load(cls) -> "UIPreferences":
+        """Load UI preferences from shared section of manager data file."""
+        if os.path.exists(MANAGER_DATA_FILE):
+            try:
+                with open(MANAGER_DATA_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+
+                # v2.0 format - load from shared section
+                prefs_data = data.get("shared", {}).get("ui_preferences", {})
+
+                field_names = {f.name for f in fields(cls)}
+                return cls(**{k: v for k, v in prefs_data.items() if k in field_names})
+            except (json.JSONDecodeError, OSError) as e:
+                _LOG.warning("Failed to load UI preferences: %s", e)
+        return cls()
+
+    def save(self) -> None:
+        """Save UI preferences to shared section of manager data file."""
+        try:
+            os.makedirs(os.path.dirname(MANAGER_DATA_FILE), exist_ok=True)
+
+            # Load existing data
+            existing_data: dict[str, Any] = {
+                "version": "2.0",
+                "remotes": {},
+                "shared": {},
+            }
+            if os.path.exists(MANAGER_DATA_FILE):
+                try:
+                    with open(MANAGER_DATA_FILE, "r", encoding="utf-8") as f:
+                        existing_data = json.load(f)
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+            # Ensure shared section exists
+            if "shared" not in existing_data:
+                existing_data["shared"] = {}
+
+            # Update UI preferences in shared section
+            existing_data["shared"]["ui_preferences"] = asdict(self)
+
+            with open(MANAGER_DATA_FILE, "w", encoding="utf-8") as f:
+                json.dump(existing_data, f, indent=2)
+            _LOG.debug("UI preferences saved")
+        except OSError as e:
+            _LOG.error("Failed to save UI preferences: %s", e)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert preferences to dictionary."""
+        return asdict(self)
+
+
+@dataclass
 class Settings:
     """
     User settings for the Integration Manager.
 
     These settings control the behavior of the integration manager
-    and are persisted to settings.json.
+    and are persisted per-remote in manager.json.
     """
 
     settings_version: int = 1
@@ -81,30 +146,48 @@ class Settings:
     """Automatically backup integration configuration files."""
 
     backup_time: str = "02:00"
-    """Time of day to run automatic backups (HH:MM format)."""
+    """Time of day to perform automatic backups (HH:MM format)."""
 
     auto_register_entities: bool = True
-    """Automatically re-register previously configured entities after integration updates."""
+    """Automatically register new entities with the remote."""
 
     show_beta_releases: bool = False
     """Show pre-release (beta) versions in version selector."""
 
-    sort_by: str = "stars"
-    """Sort available integrations by: 'stars', 'downloads', 'updated', 'created', 'name', or 'original'."""
-
-    sort_reverse: bool = False
-    """Reverse the sort order for available integrations."""
-
     @classmethod
-    def load(cls) -> "Settings":
-        """Load settings from manager data file or return defaults."""
+    def load(cls, remote_id: str | None = None) -> "Settings":
+        """
+        Load settings for a specific remote or return defaults.
+
+        :param remote_id: Remote identifier. If None, loads from first available remote (backward compatibility)
+        """
         if os.path.exists(MANAGER_DATA_FILE):
             try:
                 with open(MANAGER_DATA_FILE, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                settings_data = data.get("settings", {})
+
+                # v2.0 format - load from remotes section
+                if remote_id is None:
+                    # Backward compatibility - get first remote
+                    remotes = data.get("remotes", {})
+                    if remotes:
+                        remote_id = next(iter(remotes.keys()))
+                    else:
+                        _LOG.warning("No remotes found in manager.json")
+                        return cls()
+
+                settings_data = (
+                    data.get("remotes", {}).get(remote_id, {}).get("settings", {})
+                )
+                # Filter out UI preferences (now in UIPreferences)
+                settings_data = {
+                    k: v
+                    for k, v in settings_data.items()
+                    if k not in ["sort_by", "sort_reverse"]
+                }
+
                 field_names = {f.name for f in fields(cls)}
-                _LOG.info("Loaded settings from %s", MANAGER_DATA_FILE)
+                _LOG.debug("Loaded settings for remote %s", remote_id or "default")
 
                 # Create settings instance
                 settings = cls(
@@ -112,32 +195,25 @@ class Settings:
                 )
 
                 # Perform migrations based on settings_version
-                settings._migrate()
+                settings._migrate(remote_id)
 
                 return settings
             except (json.JSONDecodeError, OSError) as e:
-                _LOG.warning(
-                    "Failed to load settings from %s: %s", MANAGER_DATA_FILE, e
-                )
+                _LOG.warning("Failed to load settings: %s", e)
         else:
-            _LOG.info(
-                "Manager data file not found at %s, using defaults", MANAGER_DATA_FILE
-            )
+            _LOG.info("Manager data file not found, using defaults")
         return cls()
 
-    def _migrate(self) -> None:
+    def _migrate(self, remote_id: str | None = None) -> None:
         """Migrate settings from older versions to current schema."""
         current_version = self.settings_version
         needs_save = False
 
         # Migration from version 0 (no version field) to version 1
         if current_version < 1:
-            # If user had the old default (True), migrate to new default (False)
-            # If user explicitly changed it to True, they keep True (we can't distinguish)
-            # If user explicitly changed it to False, they keep False
             if self.shutdown_on_battery is True:
                 _LOG.info(
-                    "Migrating settings v%d->v1: Changing shutdown_on_battery default from True to False",
+                    "Migrating settings v%d->v1: Changing shutdown_on_battery default",
                     current_version,
                 )
                 self.shutdown_on_battery = False
@@ -148,16 +224,24 @@ class Settings:
 
         # Save if any migrations were applied
         if needs_save:
-            self.save()
+            self.save(remote_id)
             _LOG.info("Settings migrated to version %d", self.settings_version)
 
-    def save(self) -> None:
-        """Save settings to manager data file."""
+    def save(self, remote_id: str | None = None) -> None:
+        """
+        Save settings for a specific remote.
+
+        :param remote_id: Remote identifier. If None, saves to first available remote (backward compatibility)
+        """
         try:
             os.makedirs(os.path.dirname(MANAGER_DATA_FILE), exist_ok=True)
 
-            # Load existing data to preserve other sections
-            existing_data = {}
+            # Load existing data
+            existing_data: dict[str, Any] = {
+                "version": "2.0",
+                "remotes": {},
+                "shared": {},
+            }
             if os.path.exists(MANAGER_DATA_FILE):
                 try:
                     with open(MANAGER_DATA_FILE, "r", encoding="utf-8") as f:
@@ -165,13 +249,39 @@ class Settings:
                 except (json.JSONDecodeError, OSError):
                     pass
 
-            # Update settings section
-            existing_data["settings"] = asdict(self)
-            existing_data["version"] = "1.0"
+            # Ensure v2.0 structure (should already be migrated at startup)
+            if existing_data.get("version") != "2.0":
+                _LOG.error("manager.json is not v2.0 format - migration should have run at startup")
+                existing_data["version"] = "2.0"
+                if "remotes" not in existing_data:
+                    existing_data["remotes"] = {}
+                if "shared" not in existing_data:
+                    existing_data["shared"] = {}
+
+            # Resolve remote_id
+            if remote_id is None:
+                # Get first remote
+                remotes = existing_data.get("remotes", {})
+                if remotes:
+                    remote_id = next(iter(remotes.keys()))
+                else:
+                    _LOG.error(
+                        "Cannot save settings - no remote_id and no remotes exist"
+                    )
+                    return
+
+            # Ensure remote entry exists
+            if "remotes" not in existing_data:
+                existing_data["remotes"] = {}
+            if remote_id not in existing_data["remotes"]:
+                existing_data["remotes"][remote_id] = {}
+
+            # Update settings for this remote
+            existing_data["remotes"][remote_id]["settings"] = asdict(self)
 
             with open(MANAGER_DATA_FILE, "w", encoding="utf-8") as f:
                 json.dump(existing_data, f, indent=2)
-            _LOG.info("Settings saved to %s", MANAGER_DATA_FILE)
+            _LOG.debug("Settings saved for remote %s", remote_id or "default")
         except OSError as e:
             _LOG.error("Failed to save settings: %s", e)
 
