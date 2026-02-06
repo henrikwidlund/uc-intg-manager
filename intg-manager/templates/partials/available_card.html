@@ -7,6 +7,7 @@
      data-categories="{{ integration.categories|join(' ') if integration.categories else integration.category }}"
      data-installed="{{ 'true' if (integration.installed or integration.driver_installed or integration.external) else 'false' }}"
      data-has-update="{{ 'true' if integration.update_available else 'false' }}"
+     data-supports-backup="{{ 'true' if integration.supports_backup else 'false' }}"
      data-status="{% if install_error %}error{% else %}{{ integration.install_status }}{% endif %}">
     <div class="flex flex-col h-full">
         <!-- Header -->
@@ -109,6 +110,18 @@
             </div>
             
             <div class="flex items-center justify-end flex-wrap gap-2 flex-shrink-0" id="actions-{{ integration.driver_id }}">
+                {% if integration.supports_backup %}
+                <!-- Backup support indicator -->
+                <div class="group relative p-1.5 text-green-600 dark:text-green-300 hover:text-white hover:bg-uc-darker rounded transition-colors cursor-help">
+                    <i class="fa-solid fa-arrows-spin h-4 w-4"></i>
+                    <div class="absolute top-full left-1/2 transform -translate-x-1/2 mt-2 hidden group-hover:block z-50">
+                        <div class="bg-gray-900 dark:bg-gray-800 text-white text-xs rounded py-2 px-3 whitespace-nowrap shadow-lg">
+                            Supports automated backup & restore
+                            <div class="absolute bottom-full left-1/2 transform -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-b-4 border-transparent border-b-gray-900 dark:border-b-gray-800"></div>
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
                 {% if integration.driver_installed %}
                 <!-- Delete button for all installed drivers -->
                 <button

@@ -60,6 +60,7 @@
                     <option value="not-installed">Not Installed</option>
                     <option value="installed">Installed</option>
                     <option value="updates">Updates Available</option>
+                    <option value="supports-backup">Supports Restore</option>
                 </select>
                 <div class="flex gap-2 w-full sm:w-auto">
                     <select id="available-sort-by" 
@@ -115,6 +116,7 @@ function filterAvailableIntegrations() {
         const categories = (card.dataset.categories || '').toLowerCase();
         const isInstalled = card.dataset.installed === 'true';
         const hasUpdate = card.dataset.hasUpdate === 'true';
+        const supportsBackup = card.dataset.supportsBackup === 'true';
         
         // Search filter - matches name, description, developer, or categories
         const matchesSearch = !searchTerm || 
@@ -134,6 +136,8 @@ function filterAvailableIntegrations() {
             matchesStatus = !isInstalled;
         } else if (statusFilter === 'updates') {
             matchesStatus = hasUpdate;
+        } else if (statusFilter === 'supports-backup') {
+            matchesStatus = supportsBackup;
         }
         
         card.style.display = (matchesSearch && matchesCategory && matchesStatus) ? '' : 'none';
