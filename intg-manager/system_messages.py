@@ -7,6 +7,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 import certifi
 import requests
@@ -65,7 +66,7 @@ class SystemMessagesService:
         try:
             with open(MANAGER_DATA_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                self._read_message_ids = set(data.get("read_message_ids", []))
+                self._read_message_ids = set(data.get("shared", {}).get("read_message_ids", []))
                 _LOG.debug("Loaded %d read message IDs", len(self._read_message_ids))
         except FileNotFoundError:
             _LOG.debug("Manager data file not found, no messages marked as read")
@@ -80,12 +81,21 @@ class SystemMessagesService:
             # Load existing data
             try:
                 with open(MANAGER_DATA_FILE, "r", encoding="utf-8") as f:
-                    data = json.load(f)
+                    data: dict[str, Any] = json.load(f)
             except FileNotFoundError:
                 data = {}
 
-            # Update read_message_ids
-            data["read_message_ids"] = list(self._read_message_ids)
+            # Ensure minimal v2.0 structure exists
+            if "shared" not in data:
+                _LOG.error("manager.json missing 'shared' section - creating it")
+                if "version" not in data:
+                    data["version"] = "2.0"
+                if "remotes" not in data:
+                    data["remotes"] = {}
+                data["shared"] = {}
+
+            # Save to shared.read_message_ids
+            data["shared"]["read_message_ids"] = list(self._read_message_ids)
 
             # Save back to file
             with open(MANAGER_DATA_FILE, "w", encoding="utf-8") as f:

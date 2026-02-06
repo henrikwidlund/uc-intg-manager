@@ -172,8 +172,16 @@
                          hx-get="/api/status/html" 
                          hx-trigger="load, every 30s"
                          hx-swap="innerHTML"
-                         class="flex items-center gap-2">
+                         class="hidden md:flex items-center gap-2">
                         <span class="htmx-indicator spinner"></span>
+                    </div>
+                    
+                    <!-- Remote Selector -->
+                    <div id="remote-selector-container"
+                         hx-get="/api/remotes/list"
+                         hx-trigger="load"
+                         hx-swap="innerHTML"
+                         class="ml-2 md:ml-4">
                     </div>
                 </div>
             </div>
