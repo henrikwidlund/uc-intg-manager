@@ -4886,7 +4886,7 @@ def create_backup_now():
                 skipped.append(f"{name} ({reason})")
                 continue
 
-            # Try to backup
+            # Perform the backup
             backup_data = backup_integration(
                 client,
                 driver_id,

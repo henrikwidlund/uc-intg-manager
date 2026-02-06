@@ -38,6 +38,7 @@ async def main():
     logging.getLogger("github_api").setLevel(level)
     logging.getLogger("integration_service").setLevel(level)
     logging.getLogger("data_migration").setLevel(level)
+    logging.getLogger("backup_service").setLevel(level)
 
     # Force migration to v2.0 format if needed
     # This ensures all subsequent code can assume v2.0 structure

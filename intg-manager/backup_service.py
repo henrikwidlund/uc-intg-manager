@@ -50,11 +50,7 @@ def _load_backups() -> dict[str, Any]:
                 return data
         except (json.JSONDecodeError, OSError) as e:
             _LOG.error("Failed to load backups file: %s", e)
-    return {
-        "version": "2.0",
-        "remotes": {},
-        "shared": {}
-    }
+    return {"version": "2.0", "remotes": {}, "shared": {}}
 
 
 def _save_backups(data: dict[str, Any]) -> bool:
@@ -217,7 +213,7 @@ def backup_integration(
             client.complete_setup(driver_id)
             return None
 
-        _LOG.info("Successfully extracted backup data for %s", driver_id)
+        _LOG.debug("Successfully extracted backup data for %s", driver_id)
 
         # Complete the setup flow (we're done)
         client.complete_setup(driver_id)
@@ -291,13 +287,13 @@ def save_backup(driver_id: str, backup_data: str, remote_id: str | None = None) 
 
     backups = _load_backups()
     timestamp = datetime.now().isoformat()
-    
+
     # Ensure v2.0 structure
     if backups.get("version") != "2.0":
         backups["version"] = "2.0"
         if "remotes" not in backups:
             backups["remotes"] = {}
-    
+
     # Resolve remote_id
     if remote_id is None:
         remotes = backups.get("remotes", {})
@@ -306,27 +302,29 @@ def save_backup(driver_id: str, backup_data: str, remote_id: str | None = None) 
         else:
             _LOG.error("Cannot save backup - no remotes in backup file")
             return False
-    
+
     # Ensure remote entry exists
     if remote_id not in backups["remotes"]:
         backups["remotes"][remote_id] = {"integrations": {}}
     if "integrations" not in backups["remotes"][remote_id]:
         backups["remotes"][remote_id]["integrations"] = {}
-    
+
     # Save backup to remote's integrations
     backups["remotes"][remote_id]["integrations"][driver_id] = {
         "data": clean_data,
         "timestamp": timestamp,
     }
-    
+
     # Update backup_timestamp for this remote
     backups["remotes"][remote_id]["backup_timestamp"] = timestamp
-    
+
     success = _save_backups(backups)
     if success:
-        _LOG.info(
-            "Successfully saved backup for integration '%s' (remote: %s) at %s", 
-            driver_id, remote_id, timestamp
+        _LOG.debug(
+            "Successfully saved backup for integration '%s' (remote: %s) at %s",
+            driver_id,
+            remote_id,
+            timestamp,
         )
     else:
         _LOG.error("Failed to save backup for integration '%s'", driver_id)
@@ -342,7 +340,7 @@ def get_backup(driver_id: str, remote_id: str | None = None) -> str | None:
     :return: The backup data string or None if not found
     """
     backups = _load_backups()
-    
+
     # Check version to determine structure
     if backups.get("version") == "2.0":
         if remote_id is None:
@@ -352,12 +350,17 @@ def get_backup(driver_id: str, remote_id: str | None = None) -> str | None:
                 remote_id = next(iter(remotes.keys()))
             else:
                 return None
-        
-        backup_entry = backups.get("remotes", {}).get(remote_id, {}).get("integrations", {}).get(driver_id)
+
+        backup_entry = (
+            backups.get("remotes", {})
+            .get(remote_id, {})
+            .get("integrations", {})
+            .get(driver_id)
+        )
     else:
         # Legacy v1.0 format
         backup_entry = backups.get("integrations", {}).get(driver_id)
-    
+
     if backup_entry:
         return backup_entry.get("data")
     return None
@@ -381,7 +384,7 @@ def delete_backup(driver_id: str, remote_id: str | None = None) -> bool:
     :return: True if deleted (or didn't exist)
     """
     backups = _load_backups()
-    
+
     # Check version to determine structure
     if backups.get("version") == "2.0":
         if remote_id is None:
@@ -391,8 +394,10 @@ def delete_backup(driver_id: str, remote_id: str | None = None) -> bool:
                 remote_id = next(iter(remotes.keys()))
             else:
                 return True
-        
-        if driver_id in backups.get("remotes", {}).get(remote_id, {}).get("integrations", {}):
+
+        if driver_id in backups.get("remotes", {}).get(remote_id, {}).get(
+            "integrations", {}
+        ):
             del backups["remotes"][remote_id]["integrations"][driver_id]
             return _save_backups(backups)
     else:
@@ -400,12 +405,14 @@ def delete_backup(driver_id: str, remote_id: str | None = None) -> bool:
         if driver_id in backups.get("integrations", {}):
             del backups["integrations"][driver_id]
             return _save_backups(backups)
-    
+
     return True
 
 
 def backup_all_integrations(
-    client: SyncRemoteClient, include_settings: bool = True, remote_id: str | None = None
+    client: SyncRemoteClient,
+    include_settings: bool = True,
+    remote_id: str | None = None,
 ) -> dict[str, bool]:
     """
     Backup all installed custom integrations and optionally settings.
@@ -433,7 +440,9 @@ def backup_all_integrations(
                 continue
 
             _LOG.info("Backing up integration: %s", driver_id)
-            backup_data = backup_integration(client, driver_id, save_to_file=True, remote_id=remote_id)
+            backup_data = backup_integration(
+                client, driver_id, save_to_file=True, remote_id=remote_id
+            )
             results[driver_id] = backup_data is not None
 
             # Pause between integrations to avoid overwhelming the remote
