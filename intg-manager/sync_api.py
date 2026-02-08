@@ -79,6 +79,7 @@ class SyncRemoteClient:
         self,
         method: str,
         endpoint: str,
+        timeout: tuple[int, int] | None = None,
         **kwargs: Any,
     ) -> Any:
         """
@@ -86,12 +87,13 @@ class SyncRemoteClient:
 
         :param method: HTTP method (GET, POST, etc.)
         :param endpoint: API endpoint (e.g., /intg/instances)
+        :param timeout: Optional timeout override (connect, read) in seconds
         :param kwargs: Additional arguments for requests
         :return: JSON response data
         :raises SyncAPIError: If the request fails
         """
         url = f"{self._base_url}{endpoint}"
-        kwargs.setdefault("timeout", REQUEST_TIMEOUT)
+        kwargs.setdefault("timeout", timeout or REQUEST_TIMEOUT)
 
         try:
             response = self._session.request(method, url, **kwargs)
@@ -115,7 +117,8 @@ class SyncRemoteClient:
     def test_connection(self) -> bool:
         """Test connectivity to the remote."""
         try:
-            self._request("GET", "/pub/version")
+            # Use shorter timeout for connection tests to avoid slow UI when remote is offline
+            self._request("GET", "/pub/version", timeout=(2, 5))
             return True
         except SyncAPIError:
             return False
@@ -1142,10 +1145,10 @@ def load_repo_cache() -> dict[str, Any]:
     try:
         with open(MANAGER_DATA_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-            
+
             # v2.0 format - repo_cache is in shared section
             cache = data.get("shared", {}).get("repo_cache", {})
-            
+
             # Ensure proper structure
             if "repos" not in cache:
                 return {
@@ -1179,7 +1182,9 @@ def save_repo_cache(cache: dict[str, Any]) -> None:
 
         # Ensure v2.0 structure (should already be migrated at startup)
         if existing_data.get("version") != "2.0":
-            _LOG.error("manager.json is not v2.0 format - migration should have run at startup")
+            _LOG.error(
+                "manager.json is not v2.0 format - migration should have run at startup"
+            )
             existing_data["version"] = "2.0"
             if "remotes" not in existing_data:
                 existing_data["remotes"] = {}
@@ -1270,9 +1275,9 @@ def load_registry() -> list[dict[str, Any]]:
 def migrate_to_multi_remote(default_remote_id: str, default_remote_name: str) -> bool:
     """
     Migrate manager.json from v1.0 (single remote) to v2.0 (multi-remote) format.
-    
+
     Creates a backup of the existing file before migration.
-    
+
     :param default_remote_id: Identifier for the default remote (existing data will be assigned to this)
     :param default_remote_name: Display name for the default remote
     :return: True if migration successful, False otherwise
@@ -1280,24 +1285,24 @@ def migrate_to_multi_remote(default_remote_id: str, default_remote_name: str) ->
     if not os.path.exists(MANAGER_DATA_FILE):
         _LOG.info("No existing manager.json found - will create v2.0 format")
         return True
-    
+
     try:
         # Load existing data
         with open(MANAGER_DATA_FILE, "r", encoding="utf-8") as f:
             old_data = json.load(f)
-        
+
         # Check if already migrated
         if old_data.get("version") == "2.0":
             _LOG.info("manager.json already migrated to v2.0")
             return True
-        
+
         _LOG.info("Migrating manager.json from v1.0 to v2.0 format")
-        
+
         # Create backup
         backup_path = f"{MANAGER_DATA_FILE}.v1.backup"
         shutil.copy2(MANAGER_DATA_FILE, backup_path)
         _LOG.info("Created backup at %s", backup_path)
-        
+
         # Extract data from old format
         old_settings = old_data.get("settings", {})
         old_integrations = old_data.get("integrations", {})
@@ -1305,27 +1310,33 @@ def migrate_to_multi_remote(default_remote_id: str, default_remote_name: str) ->
         old_notification_state = old_data.get("notification_state", {})
         old_read_message_ids = old_data.get("read_message_ids", [])
         old_repo_cache = old_data.get("repo_cache", {})
-        
+
         # Extract UI preferences from old settings
         ui_preferences = {
             "sort_by": old_settings.get("sort_by", "stars"),
-            "sort_reverse": old_settings.get("sort_reverse", False)
+            "sort_reverse": old_settings.get("sort_reverse", False),
         }
-        
+
         # Extract registry tracking from old notification settings
         registry_tracking = {
             "last_count": old_notification_settings.get("_last_registry_count", 0),
-            "known_ids": old_notification_settings.get("_known_integration_ids", [])
+            "known_ids": old_notification_settings.get("_known_integration_ids", []),
         }
-        
+
         # Remove UI preferences from settings (now in shared)
-        new_settings = {k: v for k, v in old_settings.items() 
-                       if k not in ["sort_by", "sort_reverse"]}
-        
+        new_settings = {
+            k: v
+            for k, v in old_settings.items()
+            if k not in ["sort_by", "sort_reverse"]
+        }
+
         # Remove registry tracking from notification settings (now in shared)
-        new_notification_settings = {k: v for k, v in old_notification_settings.items()
-                                    if k not in ["_last_registry_count", "_known_integration_ids"]}
-        
+        new_notification_settings = {
+            k: v
+            for k, v in old_notification_settings.items()
+            if k not in ["_last_registry_count", "_known_integration_ids"]
+        }
+
         # Build new v2.0 structure
         new_data = {
             "version": "2.0",
@@ -1336,23 +1347,23 @@ def migrate_to_multi_remote(default_remote_id: str, default_remote_name: str) ->
                     "integrations": old_integrations,
                     "notification_settings": new_notification_settings,
                     "notification_state": old_notification_state,
-                    "read_message_ids": old_read_message_ids
+                    "read_message_ids": old_read_message_ids,
                 }
             },
             "shared": {
                 "repo_cache": old_repo_cache,
                 "ui_preferences": ui_preferences,
-                "registry_tracking": registry_tracking
-            }
+                "registry_tracking": registry_tracking,
+            },
         }
-        
+
         # Save migrated data
         with open(MANAGER_DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(new_data, f, indent=2)
-        
+
         _LOG.info("Successfully migrated manager.json to v2.0 format")
         return True
-        
+
     except Exception as e:
         _LOG.error("Failed to migrate manager.json: %s", e, exc_info=True)
         # Attempt to restore backup if it exists
