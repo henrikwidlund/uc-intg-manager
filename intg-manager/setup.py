@@ -17,44 +17,6 @@ from ucapi_framework import BaseSetupFlow
 
 _LOG = logging.getLogger(__name__)
 
-# Setup form for entering remote connection details
-_REMOTE_INPUT_SCHEMA = RequestUserInput(
-    {"en": "Remote Connection Setup"},
-    [
-        {
-            "id": "info",
-            "label": {
-                "en": "Connect to your Remote",
-            },
-            "field": {
-                "label": {
-                    "value": {
-                        "en": (
-                            "Enter the IP address and web configurator PIN for your "
-                            "Unfolded Circle Remote. The PIN can be found in the "
-                            "Remote UI under Profile settings."
-                        ),
-                    }
-                }
-            },
-        },
-        {
-            "field": {"text": {"value": ""}},
-            "id": "address",
-            "label": {
-                "en": "IP Address",
-            },
-        },
-        {
-            "field": {"password": {"value": ""}},
-            "id": "pin",
-            "label": {
-                "en": "Web Configurator PIN",
-            },
-        },
-    ],
-)
-
 
 class RemoteSetupFlow(BaseSetupFlow[RemoteConfig]):
     """
@@ -69,7 +31,42 @@ class RemoteSetupFlow(BaseSetupFlow[RemoteConfig]):
 
         :return: RequestUserInput with form fields for remote configuration
         """
-        return _REMOTE_INPUT_SCHEMA
+        return RequestUserInput(
+            {"en": "Remote Connection Setup"},
+            [
+                {
+                    "id": "info",
+                    "label": {
+                        "en": "Connect to your Remote",
+                    },
+                    "field": {
+                        "label": {
+                            "value": {
+                                "en": (
+                                    "Enter the IP address and web configurator PIN for your "
+                                    "Unfolded Circle Remote. The PIN can be found in the "
+                                    "Remote UI under Profile settings."
+                                ),
+                            }
+                        }
+                    },
+                },
+                {
+                    "field": {"text": {"value": ""}},
+                    "id": "address",
+                    "label": {
+                        "en": "IP Address",
+                    },
+                },
+                {
+                    "field": {"password": {"value": ""}},
+                    "id": "pin",
+                    "label": {
+                        "en": "Web Configurator PIN",
+                    },
+                },
+            ],
+        )
 
     def get_additional_discovery_fields(self) -> list[dict]:
         """
@@ -106,16 +103,16 @@ class RemoteSetupFlow(BaseSetupFlow[RemoteConfig]):
         # Validate required fields
         if not address:
             _LOG.warning("Address is required, re-displaying form")
-            return _REMOTE_INPUT_SCHEMA
+            return self.get_manual_entry_form()  # Re-display form with warning
 
         if not pin:
             _LOG.warning("PIN is required, re-displaying form")
-            return _REMOTE_INPUT_SCHEMA
+            return self.get_manual_entry_form()  # Re-display form with warning
 
         _LOG.debug("Attempting to connect to remote at %s", address)
 
         try:
-            # Test the connection
+            # Test the connection with authentication
             client = RemoteAPIClient(address, pin=pin)
 
             # First, test if we can connect at all
@@ -125,8 +122,11 @@ class RemoteSetupFlow(BaseSetupFlow[RemoteConfig]):
                 return SetupError(IntegrationSetupError.CONNECTION_REFUSED)
 
             try:
-                # Get version info to validate connection and retrieve device details
+                # Get version info to validate PIN - this requires authentication
+                # If the PIN is wrong, this will raise RemoteAPIError
                 version_info = await client.get_version()
+
+                # If we got here, PIN is valid
                 _LOG.info(
                     "Connected to remote: %s (firmware %s)",
                     version_info.get("device_name", "Unknown"),
@@ -169,8 +169,16 @@ class RemoteSetupFlow(BaseSetupFlow[RemoteConfig]):
                         )
 
             except RemoteAPIError as e:
-                _LOG.error("Failed to retrieve remote details: %s", e)
+                _LOG.error("Failed to retrieve remote details (invalid PIN?): %s", e)
                 await client.close()
+                # If authentication failed, re-display form for user to correct PIN
+                if (
+                    "401" in str(e)
+                    or "Unauthorized" in str(e)
+                    or "authentication" in str(e).lower()
+                ):
+                    _LOG.warning("Authentication failed - invalid PIN")
+                    return self.get_manual_entry_form()
                 return SetupError(IntegrationSetupError.CONNECTION_REFUSED)
             except Exception as e:
                 _LOG.error("Unexpected error during remote connection: %s", e)
