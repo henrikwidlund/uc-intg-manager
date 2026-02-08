@@ -236,6 +236,7 @@ class IntegrationInfo:
     custom: bool = False  # Running on the remote (installed via tar.gz)
     official: bool = False  # Official UC integration (firmware-managed)
     external: bool = False  # Running externally (Docker/network)
+    self_managed: bool = False  # Integration manages its own updates (like Integration Manager itself)
     configured_entities: int = 0
     supports_backup: bool = False  # Uses ucapi-framework with backup support
     can_update: bool = False  # Show update button (always true if update available for custom integrations)
@@ -258,6 +259,7 @@ class AvailableIntegration:
     installed: bool = False  # Has an instance configured
     driver_installed: bool = False  # Driver is installed (may not have instance)
     external: bool = False  # Running externally (Docker/network)
+    self_managed: bool = False  # Integration manages its own updates (like Integration Manager itself)
     custom: bool = True
     official: bool = False
     update_available: bool = False
@@ -280,6 +282,8 @@ class AvailableIntegration:
             return "official"
         if self.external:
             return "external"
+        if self.self_managed:
+            return "self_managed"
         if self.installed:
             return "configured"
         if self.driver_installed:
@@ -527,10 +531,11 @@ def _get_installed_integrations(remote_id: str | None = None) -> list[Integratio
         is_external = driver_type == "EXTERNAL"
         is_custom = driver_type == "CUSTOM"
 
-        # Check registry for supports_backup flag and repository URL fallback
+        # Check registry for supports_backup flag, self_managed flag, and repository URL fallback
         # Use fuzzy matching since driver_id may not match registry id exactly
         registry_item = find_registry_item(driver_id, driver_name)
         supports_backup = registry_item.get("supports_backup", False)
+        self_managed = registry_item.get("self_managed", False)
 
         if not home_page and registry_item.get("repository"):
             home_page: str = registry_item.get("repository", "")
@@ -561,6 +566,7 @@ def _get_installed_integrations(remote_id: str | None = None) -> list[Integratio
             custom=is_custom,
             official=is_official,
             external=is_external,
+            self_managed=self_managed,
             configured_entities=len(instance.get("configured_entities", [])),
             supports_backup=supports_backup,
         )
@@ -580,8 +586,8 @@ def _get_installed_integrations(remote_id: str | None = None) -> list[Integratio
                 #     info.latest_version,
                 # )
 
-                # Show update button for all custom integrations with updates
-                info.can_update = True
+                # Show update button for custom integrations (but not self_managed ones)
+                info.can_update = not self_managed
                 # _LOG.debug(
                 #     "Update button enabled for %s (can_update=True, can_auto_update will be determined)",
                 #     driver_id,
@@ -844,6 +850,7 @@ def _get_available_integrations(
         can_update = False
         can_auto_update = False
         supports_backup = item.get("supports_backup", False)
+        self_managed = item.get("self_managed", False)
 
         if is_installed and not is_official and not is_external:
             # Use the actual driver_id from the remote (not registry id) for cache lookup
@@ -854,8 +861,8 @@ def _get_available_integrations(
                     update_available = True
                     latest_version = version_info.get("latest", "")
 
-                    # Show update button for all custom integrations with updates
-                    can_update = True
+                    # Show update button for custom integrations (but not self_managed ones)
+                    can_update = not self_managed
 
                     # Check if automated backup/restore is possible
                     # Requires: supports_backup AND version >= backup_min_version (if specified)
@@ -915,6 +922,7 @@ def _get_available_integrations(
             installed=is_configured,
             driver_installed=is_installed,
             external=is_external,
+            self_managed=self_managed,
             custom=not is_official,
             official=is_official,
             update_available=update_available,
