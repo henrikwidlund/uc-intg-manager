@@ -111,7 +111,9 @@ class IntegrationService:
             timeout = aiohttp.ClientTimeout(total=30)
             ssl_context = ssl.create_default_context(cafile=certifi.where())
             connector = aiohttp.TCPConnector(ssl=ssl_context)
-            async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+            async with aiohttp.ClientSession(
+                timeout=timeout, connector=connector
+            ) as session:
                 async with session.get(KNOWN_INTEGRATIONS_URL) as response:
                     if response.status == 200:
                         self._known_integrations = await response.json()

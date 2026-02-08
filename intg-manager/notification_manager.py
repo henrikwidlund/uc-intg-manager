@@ -26,7 +26,7 @@ class NotificationManager:
 
     def __init__(self, remote_id: str) -> None:
         """Initialize the notification manager.
-        
+
         :param remote_id: The remote identifier this manager is for
         """
         self._remote_id = remote_id
@@ -45,14 +45,14 @@ class NotificationManager:
             if os.path.exists(MANAGER_DATA_FILE):
                 with open(MANAGER_DATA_FILE, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    
+
                     # v2.0 format - get from this remote's notification_state
                     notification_state = (
                         data.get("remotes", {})
                         .get(self._remote_id, {})
                         .get("notification_state", {})
                     )
-                    
+
                     self._notified_updates = set(
                         notification_state.get("notified_updates", [])
                     )
@@ -73,7 +73,9 @@ class NotificationManager:
                         len(self._notified_orphaned_activities),
                     )
         except (json.JSONDecodeError, OSError) as e:
-            _LOG.warning("[%s] Failed to load notification state: %s", self._remote_id, e)
+            _LOG.warning(
+                "[%s] Failed to load notification state: %s", self._remote_id, e
+            )
 
     def _save_notification_state(self) -> None:
         """Save notification state to manager.json file."""
@@ -89,7 +91,9 @@ class NotificationManager:
 
             # Ensure v2.0 structure (should already be migrated at startup)
             if existing_data.get("version") != "2.0":
-                _LOG.error("manager.json is not v2.0 format - migration should have run at startup")
+                _LOG.error(
+                    "manager.json is not v2.0 format - migration should have run at startup"
+                )
                 existing_data["version"] = "2.0"
                 if "remotes" not in existing_data:
                     existing_data["remotes"] = {}
@@ -98,7 +102,10 @@ class NotificationManager:
 
             # Ensure remote entry exists
             if self._remote_id not in existing_data.get("remotes", {}):
-                _LOG.warning("[%s] Remote not found in manager.json, creating entry", self._remote_id)
+                _LOG.warning(
+                    "[%s] Remote not found in manager.json, creating entry",
+                    self._remote_id,
+                )
                 if "remotes" not in existing_data:
                     existing_data["remotes"] = {}
                 existing_data["remotes"][self._remote_id] = {}
@@ -119,7 +126,11 @@ class NotificationManager:
             # Write to disk
             with open(MANAGER_DATA_FILE, "w", encoding="utf-8") as f:
                 json.dump(existing_data, f, indent=2)
-            _LOG.debug("[%s] Saved notification state to %s", self._remote_id, MANAGER_DATA_FILE)
+            _LOG.debug(
+                "[%s] Saved notification state to %s",
+                self._remote_id,
+                MANAGER_DATA_FILE,
+            )
         except OSError as e:
             _LOG.error("[%s] Failed to save notification state: %s", self._remote_id, e)
 
@@ -383,7 +394,7 @@ class NotificationManager:
             if os.path.exists(MANAGER_DATA_FILE):
                 with open(MANAGER_DATA_FILE, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    
+
                     # v2.0 format - load from shared.registry_tracking
                     shared = data.get("shared", {})
                     registry_tracking = shared.get("registry_tracking", {})
@@ -446,8 +457,10 @@ class NotificationManager:
             # Update registry tracking in shared section
             if "registry_tracking" not in existing_data["shared"]:
                 existing_data["shared"]["registry_tracking"] = {}
-            
-            existing_data["shared"]["registry_tracking"]["_known_integration_ids"] = known_ids
+
+            existing_data["shared"]["registry_tracking"]["_known_integration_ids"] = (
+                known_ids
+            )
             existing_data["shared"]["registry_tracking"]["_last_registry_count"] = count
 
             # Ensure directory exists
@@ -472,7 +485,7 @@ def get_notification_manager(remote_id: str | None = None) -> NotificationManage
     :return: NotificationManager instance for the specified remote
     """
     global _notification_managers
-    
+
     # If no remote_id provided, use first available remote from manager.json
     if remote_id is None:
         if os.path.exists(MANAGER_DATA_FILE):
@@ -491,11 +504,11 @@ def get_notification_manager(remote_id: str | None = None) -> NotificationManage
                 remote_id = ""
         else:
             remote_id = ""
-    
+
     # Get or create manager for this remote
     if remote_id not in _notification_managers:
         _notification_managers[remote_id] = NotificationManager(remote_id)
-    
+
     return _notification_managers[remote_id]
 
 

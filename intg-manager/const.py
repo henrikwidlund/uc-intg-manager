@@ -251,7 +251,9 @@ class Settings:
 
             # Ensure v2.0 structure (should already be migrated at startup)
             if existing_data.get("version") != "2.0":
-                _LOG.error("manager.json is not v2.0 format - migration should have run at startup")
+                _LOG.error(
+                    "manager.json is not v2.0 format - migration should have run at startup"
+                )
                 existing_data["version"] = "2.0"
                 if "remotes" not in existing_data:
                     existing_data["remotes"] = {}

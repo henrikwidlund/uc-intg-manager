@@ -143,9 +143,7 @@ def migrate(target_remote_id: str | None = None) -> bool:
         )
 
         v2_data["shared"]["notification_settings"] = notification_settings
-        _LOG.debug(
-            "Migrated notification_settings to shared.notification_settings"
-        )
+        _LOG.debug("Migrated notification_settings to shared.notification_settings")
 
         # Initialize shared registry tracking
         if last_registry_count is not None or known_integration_ids is not None:

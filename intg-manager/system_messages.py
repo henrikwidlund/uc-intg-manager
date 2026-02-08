@@ -66,7 +66,9 @@ class SystemMessagesService:
         try:
             with open(MANAGER_DATA_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                self._read_message_ids = set(data.get("shared", {}).get("read_message_ids", []))
+                self._read_message_ids = set(
+                    data.get("shared", {}).get("read_message_ids", [])
+                )
                 _LOG.debug("Loaded %d read message IDs", len(self._read_message_ids))
         except FileNotFoundError:
             _LOG.debug("Manager data file not found, no messages marked as read")

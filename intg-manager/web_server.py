@@ -5337,7 +5337,6 @@ class WebServer:
         """Run the Flask server (called in background thread)."""
         try:
             # Use werkzeug server for development
-            # In production, consider using waitress or gunicorn
             _LOG.info("Creating server on %s:%d", self._host, self._port)
 
             self._server = make_server(
@@ -5346,6 +5345,7 @@ class WebServer:
                 app,
                 threaded=True,
             )
+
             _LOG.info("Server created, starting to serve...")
             self._server.serve_forever()
         except OSError as e:
