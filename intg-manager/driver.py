@@ -49,7 +49,7 @@ async def main():
     driver = BaseIntegrationDriver(
         device_class=IntegrationManagerDevice,
         entity_classes=[],  # No entities exposed
-        driver_id="intg_manager_driver_dev",
+        driver_id="intg_manager_driver",
     )
 
     # Configure the device config manager
