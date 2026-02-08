@@ -30,9 +30,7 @@ from ucapi_framework import BaseConfigManager, PollingDevice, BaseIntegrationDri
 
 _LOG = logging.getLogger(__name__)
 
-# Module-level web server ownership coordination
-_web_server_owner_id: str | None = None
-_web_server_lock = asyncio.Lock()
+# Module-level web server coordination
 _all_remote_configs: list[RemoteConfig] = []
 _web_server_instance: WebServer | None = None
 
@@ -103,9 +101,6 @@ class IntegrationManagerDevice(PollingDevice):
         # Last backup date for scheduling
         self._last_backup_date: str | None = None
 
-        # Web server ownership (for multi-remote coordination)
-        self._is_web_server_owner: bool = False
-
         # Register this remote config for multi-remote support
         register_remote_config(device_config)
 
@@ -131,9 +126,21 @@ class IntegrationManagerDevice(PollingDevice):
         """Return the device address."""
         return self._device_config.address
 
+    def _is_owner(self) -> bool:
+        """
+        Check if this remote is the web server owner.
+
+        The owner is simply the first remote in the configuration file.
+        This avoids race conditions and complex election logic.
+        """
+        return (
+            len(_all_remote_configs) > 0
+            and _all_remote_configs[0].identifier == self.identifier
+        )
+
     @property
     def log_id(self) -> str:
-        """Return a log identifier for debugging."""
+        """Return the device log identifier."""
         return self.name if self.name else self.identifier
 
     @property
@@ -169,6 +176,8 @@ class IntegrationManagerDevice(PollingDevice):
             remotes = data.get("remotes", {})
             if self.identifier in remotes:
                 _LOG.debug("[%s] Remote already exists in manager.json", self.log_id)
+                # Still trigger reload in case this is a newly added remote from config.json
+                self._trigger_web_server_reload()
                 return
 
             # Add this remote to manager.json
@@ -238,22 +247,30 @@ class IntegrationManagerDevice(PollingDevice):
                 self._connected = True
                 _LOG.info("[%s] Connected to remote", self.log_id)
 
-                # Check if we're running in Docker/external mode
-                # In Docker, UC_CONFIG_HOME is set to /config
-                self._is_external = os.getenv("UC_CONFIG_HOME", "").startswith(
-                    "/config"
-                )
+                # Check if we're running in external mode
+                # UC_CONFIG_HOME is set by the UC Remote when running as an integration
+                # - Not set: Running externally on Mac/PC for development
+                # - Set to /config: Running in Docker
+                # - Set to something else: Running ON the remote itself
+                config_home = os.getenv("UC_CONFIG_HOME", "")
+                self._is_external = not config_home or config_home.startswith("/config")
 
                 if self._is_external:
-                    # Running in Docker - always start web server immediately
+                    # Running externally (Docker, PC, Mac, etc.) - always start web server
                     _LOG.info(
-                        "[%s] Running in external/Docker mode - starting web server",
+                        "[%s] Running in external mode (UC_CONFIG_HOME: %s) - starting web server",
                         self.log_id,
+                        config_home if config_home else "not set",
                     )
-                    self._is_docked = True  # Treat as always "docked" in Docker mode
+                    self._is_docked = True  # Treat as always "docked" in external mode
                     await self._on_docked()
                 else:
-                    # Running on Remote - check dock state and start web server if charging
+                    # Running on Remote as integration - check dock state and start web server if appropriate
+                    _LOG.info(
+                        "[%s] Running on remote as integration (UC_CONFIG_HOME: %s)",
+                        self.log_id,
+                        config_home,
+                    )
                     try:
                         self._is_docked = await self._client.is_docked()
                         if self._is_docked:
@@ -266,6 +283,13 @@ class IntegrationManagerDevice(PollingDevice):
                             _LOG.info(
                                 "[%s] Remote is on battery at startup", self.log_id
                             )
+                            # Check if web server should run even on battery
+                            if not self._settings.shutdown_on_battery:
+                                _LOG.info(
+                                    "[%s] Starting web server on battery (shutdown_on_battery=False)",
+                                    self.log_id,
+                                )
+                                await self._on_docked()
                     except RemoteAPIError as e:
                         _LOG.warning(
                             "[%s] Failed to check initial charging status: %s",
@@ -291,10 +315,19 @@ class IntegrationManagerDevice(PollingDevice):
         """Disconnect from the remote."""
         _LOG.debug("[%s] Disconnecting from remote", self.log_id)
 
-        # Stop web server if running
-        if self._web_server and self._web_server.is_running:
+        # Only stop web server if:
+        # 1. We're running on the remote (not Docker), AND
+        # 2. We're the owner
+        # In Docker mode, web server should keep running even if this remote disconnects
+        if (
+            not self._is_external
+            and self._is_owner()
+            and self._web_server
+            and self._web_server.is_running
+        ):
             self._web_server.stop()
             self._web_server = None
+            _LOG.info("[%s] Web server stopped", self.log_id)
 
         # Close API client
         await self._client.close()
@@ -344,16 +377,16 @@ class IntegrationManagerDevice(PollingDevice):
         # Build poll activity summary for consolidated logging
         poll_tasks = []
         periodic_check = self._poll_count % VERSION_CHECK_INTERVAL_POLLS == 0
-        
+
         if periodic_check:
             poll_tasks.append("versions/orphans/registry")
-        if self._is_web_server_owner and periodic_check:
+        if self._is_owner() and periodic_check:
             poll_tasks.append("repo-batch")
         poll_tasks.append("backup-check")
         poll_tasks.append("error-states")
-        if self._is_web_server_owner:
+        if self._is_owner():
             poll_tasks.append("health-check")
-        
+
         tasks_str = ", ".join(poll_tasks) if poll_tasks else "dock-status-only"
         _LOG.debug(
             "[%s] Poll #%d: %s | docked=%s owner=%s",
@@ -361,7 +394,7 @@ class IntegrationManagerDevice(PollingDevice):
             self._poll_count,
             tasks_str,
             self._is_docked,
-            self._is_web_server_owner
+            self._is_owner(),
         )
 
         try:
@@ -394,7 +427,7 @@ class IntegrationManagerDevice(PollingDevice):
                 await self._check_integration_versions()
 
                 # Shared task: Fetch repository batch (owner only)
-                if self._is_web_server_owner:
+                if self._is_owner():
                     web_server.fetch_repository_batch()
 
             # Periodic backup check - only when docked and web server is running
@@ -414,32 +447,44 @@ class IntegrationManagerDevice(PollingDevice):
             _LOG.warning("[%s] Failed to poll power status: %s", self.log_id, e)
 
     async def _on_docked(self) -> None:
-        """Handle remote being docked/charging - start web server if elected owner."""
+        """Handle remote being docked/charging - start web server if owner."""
         _LOG.info("[%s] Remote charging started", self.log_id)
 
+        global _web_server_instance
+
         try:
-            global _web_server_owner_id
-
-            # Elect web server owner using lock (first wins)
-            async with _web_server_lock:
-                if _web_server_owner_id is None:
-                    _web_server_owner_id = self.identifier
-                    self._is_web_server_owner = True
-                    _LOG.info("[%s] Elected as web server owner", self.log_id)
-                else:
-                    self._is_web_server_owner = False
-                    _LOG.info(
-                        "[%s] Web server already owned by: %s",
-                        self.log_id,
-                        _web_server_owner_id,
-                    )
-
-            # Only start web server if we're the owner
-            if not self._is_web_server_owner:
-                _LOG.info("[%s] Skipping web server start - not owner", self.log_id)
+            # In external mode, check if web server is already running globally
+            if (
+                self._is_external
+                and _web_server_instance
+                and _web_server_instance.is_running
+            ):
+                _LOG.info(
+                    "[%s] Web server already running in external mode - skipping start",
+                    self.log_id,
+                )
+                # Set local reference to global instance
+                self._web_server = _web_server_instance
                 return
 
-            _LOG.info("[%s] Starting web server as owner", self.log_id)
+            # In remote mode, only the owner (first in config) starts the web server
+            if not self._is_external and not self._is_owner():
+                _LOG.info(
+                    "[%s] Skipping web server start - not owner (owner is %s)",
+                    self.log_id,
+                    _all_remote_configs[0].identifier
+                    if _all_remote_configs
+                    else "unknown",
+                )
+                return
+
+            if self._is_external:
+                _LOG.info("[%s] Starting web server in Docker mode", self.log_id)
+            else:
+                _LOG.info(
+                    "[%s] Starting web server as owner (first remote in config)",
+                    self.log_id,
+                )
 
             if self._web_server is None:
                 # Pass all registered remote configs to WebServer
@@ -447,7 +492,6 @@ class IntegrationManagerDevice(PollingDevice):
                     remote_configs=_all_remote_configs,
                 )
                 # Set global reference
-                global _web_server_instance
                 _web_server_instance = self._web_server
             else:
                 # Web server already exists - reload with updated remote configs
@@ -484,7 +528,7 @@ class IntegrationManagerDevice(PollingDevice):
                         )
 
                         # Shared (owner only): Check for new system messages from GitHub
-                        if self._is_web_server_owner:
+                        if self._is_owner():
                             self._web_server.check_system_messages()
 
                         _LOG.info(
@@ -508,6 +552,14 @@ class IntegrationManagerDevice(PollingDevice):
 
     async def _on_undocked(self) -> None:
         """Handle remote being undocked/unplugged - conditionally stop web server."""
+        # In Docker mode, this should never be called, but add safety check
+        if self._is_external:
+            _LOG.debug(
+                "[%s] Ignoring undock event in Docker mode - web server always runs",
+                self.log_id,
+            )
+            return
+
         # Load settings for THIS remote
         settings = Settings.load(self.identifier)
 
@@ -521,20 +573,9 @@ class IntegrationManagerDevice(PollingDevice):
         _LOG.info("[%s] Remote on battery", self.log_id)
 
         # Only stop web server if we're the owner
-        if (
-            self._is_web_server_owner
-            and self._web_server
-            and self._web_server.is_running
-        ):
-            global _web_server_owner_id
-
-            # Release ownership
-            async with _web_server_lock:
-                _web_server_owner_id = None
-                self._is_web_server_owner = False
-
+        if self._is_owner() and self._web_server and self._web_server.is_running:
             self._web_server.stop()
-            _LOG.info("[%s] Web server stopped and ownership released", self.log_id)
+            _LOG.info("[%s] Web server stopped", self.log_id)
 
     async def _check_integration_versions(self) -> None:
         """
@@ -560,7 +601,7 @@ class IntegrationManagerDevice(PollingDevice):
             web_server.check_orphaned_entities(self.identifier)
 
             # Shared (owner only): Check for new system messages from GitHub
-            if self._is_web_server_owner:
+            if self._is_owner():
                 web_server.check_system_messages()
 
             _LOG.debug("[%s] Integration checks complete", self.log_id)
@@ -663,7 +704,7 @@ class IntegrationManagerDevice(PollingDevice):
         web_server = _web_server_instance
 
         # Only the web server owner should perform health checks
-        if not self._is_web_server_owner or not web_server or not web_server.is_running:
+        if not self._is_owner() or not web_server or not web_server.is_running:
             return
 
         # Determine if web server should actually be running based on current conditions
