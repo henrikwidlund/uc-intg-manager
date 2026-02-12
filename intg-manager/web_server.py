@@ -955,6 +955,8 @@ def _get_available_integrations(
         available.sort(key=lambda x: x.name.lower(), reverse=sort_reverse)
     elif sort_by == "downloads":
         available.sort(key=lambda x: x.downloads, reverse=not sort_reverse)
+    elif sort_by == "developer":
+        available.sort(key=lambda x: x.developer.lower() if x.developer else "", reverse=sort_reverse)
     # "original" or any other value = keep original registry order (no sorting needed)
 
     # Check for new integrations in registry and send notification
