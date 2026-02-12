@@ -155,7 +155,7 @@
                 </a>
                 {% endif %}
                 
-                {% elif integration.official %}
+                {% if integration.official %}
                 <a href="http://{{ remote_ip }}/configurator/#/integrations" target="_blank" rel="noopener" class="text-xs text-teal-700 dark:text-teal-400 hover:text-teal-800 dark:hover:text-teal-300 italic transition-colors" title="Manage in firmware settings">
                     Firmware <i class="fas fa-external-link-alt ml-0.5"></i>
                 </a>
