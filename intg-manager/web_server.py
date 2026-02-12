@@ -628,8 +628,9 @@ def _get_installed_integrations(remote_id: str | None = None) -> list[Integratio
                 )
             except Exception as notify_error:
                 _LOG.error("Failed to send error state notification: %s", notify_error)
-        else:
-            # Integration is not in error state - clear any previous error notification
+        elif state_upper in ("CONNECTED", "OK"):
+            # Integration is in healthy state - clear any previous error notification
+            # Only clear when truly healthy (CONNECTED/OK), not for intermediate states
             try:
                 nm = get_notification_manager(remote_id)
                 nm.clear_error_state(driver_id)
