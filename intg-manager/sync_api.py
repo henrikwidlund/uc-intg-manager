@@ -366,15 +366,18 @@ class SyncRemoteClient:
             _LOG.error("Failed to get remote detail for %s: %s", entity_id, e)
             raise SyncAPIError(f"Failed to get remote detail: {e}") from e
 
-    def get_custom_ir_codesets(self) -> list[dict[str, Any]]:
+    def get_custom_ir_codesets(self, page: int = 1, limit: int = 100) -> list[dict[str, Any]]:
         """
         Get list of custom IR codesets.
 
+        :param page: Page number for pagination
+        :param limit: Number of results per page
         :return: List of custom IR codeset dictionaries
         :raises SyncAPIError: If the request fails
         """
         try:
-            result = self._request("GET", "/ir/codes/custom")
+            params = {"page": page, "limit": limit}
+            result = self._request("GET", "/ir/codes/custom", params=params)
             _LOG.debug("Found %d custom IR codesets", len(result) if result else 0)
             return result if isinstance(result, list) else []
         except Exception as e:
@@ -744,8 +747,19 @@ def find_orphaned_ir_codesets(api_client: SyncRemoteClient) -> list[dict[str, An
 
         _LOG.debug("Found %d associated IR codeset IDs", len(associated_codeset_ids))
 
-        # Get all custom IR codesets
-        all_codesets = api_client.get_custom_ir_codesets()
+        # Get all custom IR codesets with pagination
+        all_codesets = []
+        page = 1
+        while True:
+            codesets = api_client.get_custom_ir_codesets(page=page, limit=100)
+            if not codesets:
+                break
+            all_codesets.extend(codesets)
+            # If we got less than limit, we're done
+            if len(codesets) < 100:
+                break
+            page += 1
+        
         _LOG.debug("Found %d total custom IR codesets", len(all_codesets))
 
         # Find orphans - codesets not associated with any remote
