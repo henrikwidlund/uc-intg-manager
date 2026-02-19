@@ -16,10 +16,8 @@
             class="inline-flex items-center justify-center px-3 sm:px-4 py-2 bg-uc-primary hover:bg-uc-secondary text-white text-sm font-medium rounded-lg transition-colors"
             hx-get="/api/integrations/available"
             hx-target="#available-container"
-            hx-swap="innerHTML"
-            hx-indicator="#refresh-spinner">
-            <span id="refresh-spinner" class="htmx-indicator spinner mr-2"></span>
-            <i class="fa-solid fa-arrows-rotate h-4 w-4 mr-2"></i>
+            hx-swap="innerHTML">
+            <i id="refresh-icon" class="fa-solid fa-arrows-rotate h-4 w-4 mr-2"></i>
             Refresh
         </button>
     </div>
@@ -68,7 +66,6 @@
                             hx-vals='js:{sort_by: event.target.value, sort_reverse: document.getElementById("sort-reverse-flag").value}'
                             hx-target="#available-container"
                             hx-swap="innerHTML"
-                            hx-indicator="#refresh-spinner"
                             class="flex-1 sm:flex-initial px-3 sm:px-4 py-2 bg-white dark:bg-uc-darker border border-gray-300 dark:border-uc-border rounded-lg text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-uc-primary">
                         <option value="original">Original Order</option>
                         <option value="stars">Most Stars</option>
@@ -190,6 +187,21 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         })
         .catch(err => console.error('Failed to load sort settings:', err));
+});
+
+// Spin refresh icon during HTMX requests
+document.body.addEventListener('htmx:beforeRequest', function(event) {
+    const refreshIcon = document.getElementById('refresh-icon');
+    if (refreshIcon && event.target.querySelector('#refresh-icon')) {
+        refreshIcon.classList.add('fa-spin');
+    }
+});
+
+document.body.addEventListener('htmx:afterRequest', function(event) {
+    const refreshIcon = document.getElementById('refresh-icon');
+    if (refreshIcon && event.target.querySelector('#refresh-icon')) {
+        refreshIcon.classList.remove('fa-spin');
+    }
 });
 </script>
 {% endblock %}

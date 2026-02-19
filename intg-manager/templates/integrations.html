@@ -16,11 +16,9 @@
             class="inline-flex items-center justify-center px-3 sm:px-4 py-2 bg-uc-primary hover:bg-uc-secondary text-white text-sm font-medium rounded-lg transition-colors"
             hx-post="/api/integrations/refresh-versions"
             hx-swap="none"
-            hx-indicator="#refresh-spinner"
             hx-on::after-request="if(event.detail.successful) { htmx.ajax('GET', '/api/integrations/list', {target: '#integrations-container', swap: 'innerHTML'}); }"
             title="Refresh list and check for updates">
-            <span id="refresh-spinner" class="htmx-indicator spinner mr-2"></span>
-            <i class="fa-solid fa-arrows-rotate h-4 w-4 mr-2"></i>
+            <i id="refresh-icon" class="fa-solid fa-arrows-rotate h-4 w-4 mr-2"></i>
             Refresh
         </button>
     </div>
@@ -97,5 +95,20 @@ function filterInstalledIntegrations() {
         card.style.display = (matchesSearch && matchesStatus) ? '' : 'none';
     });
 }
+
+// Spin refresh icon during HTMX requests
+document.body.addEventListener('htmx:beforeRequest', function(event) {
+    const refreshIcon = document.getElementById('refresh-icon');
+    if (refreshIcon && event.target.querySelector('#refresh-icon')) {
+        refreshIcon.classList.add('fa-spin');
+    }
+});
+
+document.body.addEventListener('htmx:afterRequest', function(event) {
+    const refreshIcon = document.getElementById('refresh-icon');
+    if (refreshIcon && event.target.querySelector('#refresh-icon')) {
+        refreshIcon.classList.remove('fa-spin');
+    }
+});
 </script>
 {% endblock %}
