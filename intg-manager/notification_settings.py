@@ -28,6 +28,9 @@ class HomeAssistantNotificationConfig:
     token: str = ""
     """Long-lived access token for Home Assistant API."""
 
+    service: str = "notify"
+    """Notify service name (e.g., 'notify', 'mobile_app_iphone', 'persistent_notification')."""
+
 
 @dataclass
 class WebhookNotificationConfig:

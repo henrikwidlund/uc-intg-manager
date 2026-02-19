@@ -56,6 +56,35 @@
                     <p class="mt-1 text-xs text-gray-600 dark:text-gray-500">Create a token in Home Assistant: Profile → Security → Long-Lived Access Tokens</p>
                 </div>
                 
+                <div>
+                    <label for="ha-service" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                        Notify Service
+                    </label>
+                    <div class="flex gap-2">
+                        <div class="flex-1 relative">
+                            <select id="ha-service" name="service"
+                                   class="w-full px-4 py-2 bg-white dark:bg-uc-darker border border-gray-300 dark:border-uc-border rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 appearance-none pr-10">
+                                <option value="notify" {% if notification_settings and notification_settings.home_assistant and notification_settings.home_assistant.service == 'notify' %}selected{% endif %}>notify (broadcast - default)</option>
+                                {% if notification_settings and notification_settings.home_assistant and notification_settings.home_assistant.service and notification_settings.home_assistant.service != 'notify' %}
+                                <option value="{{ notification_settings.home_assistant.service }}" selected>{{ notification_settings.home_assistant.service }}</option>
+                                {% endif %}
+                            </select>
+                            <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-400">
+                                <i class="fa-solid fa-chevron-down"></i>
+                            </div>
+                        </div>
+                        <button type="button" id="ha-refresh-services"
+                                class="px-4 py-2 bg-gray-200 dark:bg-uc-darker hover:bg-gray-300 dark:hover:bg-uc-card text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white text-sm font-medium rounded-lg transition-colors border border-gray-300 dark:border-uc-border"
+                                title="Refresh available services">
+                            <i class="fa-solid fa-rotate"></i>
+                        </button>
+                    </div>
+                    <p class="mt-1 text-xs text-gray-600 dark:text-gray-500">
+                        Select a specific notify service (e.g., mobile_app_iphone) or use 'notify' for broadcast. 
+                        <span id="ha-service-status" class="italic"></span>
+                    </p>
+                </div>
+                
                 <div class="flex items-center gap-3">
                     <button type="submit" 
                             class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors">
@@ -476,6 +505,84 @@ document.getElementById('discord-enabled').addEventListener('change', async (e) 
     }
 });
 
+// Refresh HA services function (reusable)
+async function refreshHAServices() {
+    const statusEl = document.getElementById('ha-service-status');
+    const refreshBtn = document.getElementById('ha-refresh-services');
+    const icon = refreshBtn?.querySelector('i');
+    
+    // Show loading state
+    if (icon) icon.classList.add('fa-spin');
+    if (statusEl) {
+        statusEl.textContent = 'Fetching services...';
+        statusEl.className = 'italic text-gray-500';
+    }
+    
+    try {
+        const response = await fetch('/api/notifications/home-assistant/services');
+        const data = await response.json();
+        
+        if (data.success && data.services) {
+            const select = document.getElementById('ha-service');
+            const currentValue = select.value;
+            
+            // Clear and rebuild options
+            select.innerHTML = '<option value="notify">notify (broadcast - default)</option>';
+            
+            // Add fetched services
+            data.services.forEach(service => {
+                const option = document.createElement('option');
+                option.value = service;
+                option.textContent = service;
+                if (service === currentValue) {
+                    option.selected = true;
+                }
+                select.appendChild(option);
+            });
+            
+            // If current value isn't in the list, add it
+            if (currentValue && currentValue !== 'notify' && !data.services.includes(currentValue)) {
+                const option = document.createElement('option');
+                option.value = currentValue;
+                option.textContent = currentValue;
+                option.selected = true;
+                select.appendChild(option);
+            }
+            
+            if (statusEl) {
+                statusEl.textContent = `Found ${data.services.length} service(s)`;
+                statusEl.className = 'italic text-green-600 dark:text-green-400';
+            }
+        } else {
+            if (statusEl) {
+                statusEl.textContent = data.error || 'Failed to fetch services';
+                statusEl.className = 'italic text-red-600 dark:text-red-400';
+            }
+        }
+    } catch (error) {
+        if (statusEl) {
+            statusEl.textContent = 'Error: ' + error.message;
+            statusEl.className = 'italic text-red-600 dark:text-red-400';
+        }
+    } finally {
+        if (icon) icon.classList.remove('fa-spin');
+    }
+}
+
+// Refresh HA services on button click
+document.getElementById('ha-refresh-services').addEventListener('click', refreshHAServices);
+
+// Auto-load HA services on page load if HA is configured
+window.addEventListener('DOMContentLoaded', () => {
+    const haUrl = document.getElementById('ha-url')?.value;
+    const haToken = document.getElementById('ha-token')?.value;
+    
+    // Only auto-load if URL and token are configured
+    if (haUrl && haToken) {
+        refreshHAServices();
+    }
+});
+
 // Home Assistant form
 document.getElementById('ha-form').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -489,7 +596,8 @@ document.getElementById('ha-form').addEventListener('submit', async (e) => {
             body: JSON.stringify({
                 enabled: enabled,
                 url: formData.get('url'),
-                token: formData.get('token')
+                token: formData.get('token'),
+                service: formData.get('service') || 'notify'
             })
         });
         
@@ -504,8 +612,18 @@ document.getElementById('ha-form').addEventListener('submit', async (e) => {
 });
 
 document.getElementById('ha-test').addEventListener('click', async () => {
+    const formData = new FormData(document.getElementById('ha-form'));
+    
     try {
-        const response = await fetch('/api/notifications/home-assistant/test', {method: 'POST'});
+        const response = await fetch('/api/notifications/home-assistant/test', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                url: formData.get('url'),
+                token: formData.get('token'),
+                service: formData.get('service') || 'notify'
+            })
+        });
         if (response.ok) {
             showMessage('Test notification sent to Home Assistant');
         } else {

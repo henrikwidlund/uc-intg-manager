@@ -22,54 +22,54 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from notification_settings import (
-    DiscordNotificationConfig,
-    HomeAssistantNotificationConfig,
-    WebhookNotificationConfig,
-    PushoverNotificationConfig,
-    NtfyNotificationConfig,
-)
-from notification_settings import NotificationSettings, NotificationTriggers
-from notification_service import NotificationService
-from notification_manager import send_notification_sync, get_notification_manager
-from system_messages import get_system_messages_service
-
+import aiohttp
 import markdown
-from flask import Flask, render_template, jsonify, request, send_file, Response, session
-from werkzeug.serving import make_server
-
 from backup_service import (
-    backup_integration,
-    get_all_backups,
-    delete_backup,
     backup_all_integrations,
+    backup_integration,
+    delete_backup,
+    get_all_backups,
     get_backup,
 )
 from const import (
-    WEB_SERVER_PORT,
-    Settings,
-    UIPreferences,
-    RemoteConfig,
     API_DELAY,
     MANAGER_DATA_FILE,
     REPO_CACHE_VALIDITY,
     REPO_FETCH_BATCH_INTERVAL,
     REPO_FETCH_BATCH_SIZE,
+    WEB_SERVER_PORT,
+    RemoteConfig,
+    Settings,
+    UIPreferences,
 )
 from data_migration import migrate as migrate_v1_to_v2
+from flask import Flask, Response, jsonify, render_template, request, send_file, session
 from log_handler import get_log_entries, get_log_handler
 from migration_service import extract_migration_mappings
+from notification_manager import get_notification_manager, send_notification_sync
+from notification_service import NotificationService, _get_ssl_context
+from notification_settings import (
+    DiscordNotificationConfig,
+    HomeAssistantNotificationConfig,
+    NotificationSettings,
+    NotificationTriggers,
+    NtfyNotificationConfig,
+    PushoverNotificationConfig,
+    WebhookNotificationConfig,
+)
+from packaging.version import InvalidVersion, Version
 from sync_api import (
-    SyncRemoteClient,
-    SyncGitHubClient,
-    load_repo_cache,
-    load_registry,
     SyncAPIError,
+    SyncGitHubClient,
+    SyncRemoteClient,
     find_orphaned_ir_codesets,
     get_cached_repo_info,
+    load_registry,
+    load_repo_cache,
     save_repo_cache,
 )
-from packaging.version import Version, InvalidVersion
+from system_messages import get_system_messages_service
+from werkzeug.serving import make_server
 
 _LOG = logging.getLogger(__name__)
 
@@ -236,7 +236,9 @@ class IntegrationInfo:
     custom: bool = False  # Running on the remote (installed via tar.gz)
     official: bool = False  # Official UC integration (firmware-managed)
     external: bool = False  # Running externally (Docker/network)
-    self_managed: bool = False  # Integration manages its own updates (like Integration Manager itself)
+    self_managed: bool = (
+        False  # Integration manages its own updates (like Integration Manager itself)
+    )
     configured_entities: int = 0
     supports_backup: bool = False  # Uses ucapi-framework with backup support
     can_update: bool = False  # Show update button (always true if update available for custom integrations)
@@ -259,7 +261,9 @@ class AvailableIntegration:
     installed: bool = False  # Has an instance configured
     driver_installed: bool = False  # Driver is installed (may not have instance)
     external: bool = False  # Running externally (Docker/network)
-    self_managed: bool = False  # Integration manages its own updates (like Integration Manager itself)
+    self_managed: bool = (
+        False  # Integration manages its own updates (like Integration Manager itself)
+    )
     custom: bool = True
     official: bool = False
     update_available: bool = False
@@ -956,7 +960,10 @@ def _get_available_integrations(
     elif sort_by == "downloads":
         available.sort(key=lambda x: x.downloads, reverse=not sort_reverse)
     elif sort_by == "developer":
-        available.sort(key=lambda x: x.developer.lower() if x.developer else "", reverse=sort_reverse)
+        available.sort(
+            key=lambda x: x.developer.lower() if x.developer else "",
+            reverse=sort_reverse,
+        )
     # "original" or any other value = keep original registry order (no sorting needed)
 
     # Check for new integrations in registry and send notification
@@ -4036,6 +4043,7 @@ def save_home_assistant_settings():
             enabled=data.get("enabled", False),
             url=data.get("url", ""),
             token=data.get("token", ""),
+            service=data.get("service", "notify"),
         )
 
         settings.save(remote_id=get_active_remote_id())
@@ -4051,13 +4059,15 @@ def test_home_assistant_notification():
     """Send a test notification to Home Assistant."""
 
     try:
+        data = request.get_json() or {}
         settings = NotificationSettings.load(remote_id=get_active_remote_id())
 
-        # Temporarily enable for testing
+        # Use values from request if provided, otherwise fall back to saved settings
         test_config = HomeAssistantNotificationConfig(
             enabled=True,
-            url=settings.home_assistant.url,
-            token=settings.home_assistant.token,
+            url=data.get("url") or settings.home_assistant.url,
+            token=data.get("token") or settings.home_assistant.token,
+            service=data.get("service") or settings.home_assistant.service,
         )
 
         async def send_test():
@@ -4079,6 +4089,68 @@ def test_home_assistant_notification():
         ), 400
     except Exception as e:
         _LOG.error("Failed to send test notification: %s", e)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/notifications/home-assistant/services", methods=["GET"])
+def get_home_assistant_services():
+    """Get available Home Assistant notify services."""
+
+    try:
+        settings = NotificationSettings.load(remote_id=get_active_remote_id())
+
+        if not settings.home_assistant.url or not settings.home_assistant.token:
+            return jsonify(
+                {"success": False, "error": "Home Assistant URL and token required"}
+            ), 400
+
+        async def fetch_services():
+            url = f"{settings.home_assistant.url.rstrip('/')}/api/services"
+            headers = {
+                "Authorization": f"Bearer {settings.home_assistant.token}",
+                "Content-Type": "application/json",
+            }
+
+            try:
+                ssl_context = _get_ssl_context()
+                connector = aiohttp.TCPConnector(ssl=ssl_context)
+                async with aiohttp.ClientSession(connector=connector) as session:
+                    async with session.get(url, headers=headers, timeout=10) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            # Find notify domain
+                            for domain in data:
+                                if domain.get("domain") == "notify":
+                                    services = domain.get("services", [])
+                                    # Filter out the generic 'notify' from the list for clarity
+                                    # Users can still manually type it
+                                    specific_services = [
+                                        s for s in services if s != "notify"
+                                    ]
+                                    return {
+                                        "success": True,
+                                        "services": specific_services,
+                                        "all_services": services,
+                                    }
+                            return {
+                                "success": False,
+                                "error": "No notify services found",
+                            }
+                        return {
+                            "success": False,
+                            "error": f"Failed to fetch services: {resp.status}",
+                        }
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+
+        result = asyncio.run(fetch_services())
+
+        if result.get("success"):
+            return jsonify(result)
+        return jsonify(result), 400
+
+    except Exception as e:
+        _LOG.error("Failed to fetch HA services: %s", e)
         return jsonify({"success": False, "error": str(e)}), 500
 
 
