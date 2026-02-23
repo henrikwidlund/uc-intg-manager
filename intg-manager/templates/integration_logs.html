@@ -16,62 +16,88 @@
 <div class="mb-6 bg-uc-light-card dark:bg-gray-800 rounded-lg p-4 sm:p-6 border border-uc-light-border dark:border-transparent">
     <div class="flex flex-col gap-4">
         <div class="flex flex-col lg:flex-row gap-4 items-start lg:items-end">
-            <!-- Service Dropdown -->
+            <!-- Service Multi-Select -->
             <div class="flex-1 w-full">
-                <label for="service-select" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                     <i class="fa-solid fa-microchip mr-1.5 text-blue-400"></i>
-                    Select Integration Service
+                    Select Integration Service(s)
                 </label>
-                <select id="service-select" 
-                        name="service"
-                        hx-get="/api/integration-logs/entries"
-                        hx-target="#integration-log-entries"
-                        hx-swap="innerHTML"
-                        hx-include="[name='service'], [name='priority']"
-                        hx-trigger="change"
-                        class="w-full px-4 py-2.5 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white shadow-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-650 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 focus:outline-none transition-colors">
-                    <option value="" class="text-gray-500 dark:text-gray-400">Select a service...</option>
-                    {% for service in services %}
-                    <option value="{{ service.service }}" {% if service.service == selected_service %}selected{% endif %} class="py-2">
-                        {{ service.display_name }}
-                    </option>
-                    {% endfor %}
-                </select>
+                <!-- Dropdown trigger -->
+                <div class="relative" id="service-multiselect">
+                    <button type="button" id="service-dropdown-btn"
+                            onclick="toggleServiceDropdown()"
+                            class="w-full px-4 py-1 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-left text-gray-900 dark:text-white shadow-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-650 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 focus:outline-none transition-colors flex items-center justify-between">
+                        <span id="service-dropdown-label" class="text-gray-500 dark:text-gray-400 truncate">Select services...</span>
+                        <i class="fa-solid fa-chevron-down text-gray-400 ml-2 flex-shrink-0 transition-transform" id="service-dropdown-chevron"></i>
+                    </button>
+                    <!-- Dropdown panel -->
+                    <div id="service-dropdown-panel"
+                         class="hidden absolute z-20 mt-1 w-full bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg shadow-lg max-h-64 overflow-y-auto">
+                        {% if services %}
+                        <label class="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600 border-b border-gray-200 dark:border-gray-600">
+                            <input type="checkbox" id="service-select-all" onchange="toggleAllServices(this)"
+                                   class="rounded text-blue-500 focus:ring-blue-500 bg-gray-200 dark:bg-gray-600 border-gray-300 dark:border-gray-500">
+                            <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Select All</span>
+                        </label>
+                        {% for service in services %}
+                        <label class="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600">
+                            <input type="checkbox" name="service-checkbox" value="{{ service.service }}"
+                                   onchange="onServiceChange()"
+                                   class="rounded text-blue-500 focus:ring-blue-500 bg-gray-200 dark:bg-gray-600 border-gray-300 dark:border-gray-500">
+                            <span class="text-sm text-gray-700 dark:text-gray-300">{{ service.display_name }}</span>
+                        </label>
+                        {% endfor %}
+                        {% else %}
+                        <div class="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">No services available</div>
+                        {% endif %}
+                    </div>
+                </div>
             </div>
             
             <!-- Priority/Log Level Dropdown -->
             <div class="w-full lg:w-64">
-                <label for="priority-select" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                     <i class="fa-solid fa-filter mr-1.5 text-blue-400"></i>
                     Log Level
                 </label>
-                <select id="priority-select" 
-                        name="priority"
-                        hx-get="/api/integration-logs/entries"
-                        hx-target="#integration-log-entries"
-                        hx-swap="innerHTML"
-                        hx-include="[name='service'], [name='priority']"
-                        hx-trigger="change"
-                        class="w-full px-4 py-2.5 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-gray-900 dark:text-white shadow-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-650 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 focus:outline-none transition-colors">
-                    <option value="7" selected class="py-2">All Levels (Debug+)</option>
-                    <option value="6" class="py-2">Info+</option>
-                    <option value="5" class="py-2">Notice+</option>
-                    <option value="4" class="py-2">Warning+</option>
-                    <option value="3" class="py-2">Error+</option>
-                    <option value="2" class="py-2">Critical+</option>
-                    <option value="1" class="py-2">Alert+</option>
-                    <option value="0" class="py-2">Emergency Only</option>
-                </select>
+                <div class="relative" id="priority-dropdown">
+                    <button type="button" id="priority-dropdown-btn"
+                            onclick="togglePriorityDropdown()"
+                            class="w-full px-4 py-1 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-left text-gray-900 dark:text-white shadow-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-650 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 focus:outline-none transition-colors flex items-center justify-between">
+                        <span id="priority-dropdown-label" class="truncate">All Levels (Debug+)</span>
+                        <i class="fa-solid fa-chevron-down text-gray-400 ml-2 flex-shrink-0 transition-transform" id="priority-dropdown-chevron"></i>
+                    </button>
+                    <div id="priority-dropdown-panel"
+                         class="hidden absolute z-20 mt-1 w-full bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg shadow-lg overflow-hidden">
+                        {% set levels = [
+                            ('7', 'All Levels (Debug+)'),
+                            ('6', 'Info+'),
+                            ('5', 'Notice+'),
+                            ('4', 'Warning+'),
+                            ('3', 'Error+'),
+                            ('2', 'Critical+'),
+                            ('1', 'Alert+'),
+                            ('0', 'Emergency Only')
+                        ] %}
+                        {% for val, label in levels %}
+                        <button type="button"
+                                onclick="selectPriority('{{ val }}', '{{ label }}')"
+                                data-value="{{ val }}"
+                                class="priority-option w-full text-left px-4 py-2.5 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors {% if val == '7' %}bg-gray-100 dark:bg-gray-600 font-medium{% endif %}">
+                            {{ label }}
+                        </button>
+                        {% endfor %}
+                    </div>
+                </div>
+                <!-- Hidden input so fetchLogs() can read the value -->
+                <input type="hidden" id="priority-select" value="7">
             </div>
             
             <!-- Action Buttons -->
             <div class="flex gap-2 sm:gap-3">
                 <button type="button"
                         id="refresh-btn"
-                        hx-get="/api/integration-logs/entries"
-                        hx-target="#integration-log-entries"
-                        hx-swap="innerHTML"
-                        hx-include="[name='service'], [name='priority']"
+                        onclick="fetchLogs()"
                         class="px-3 sm:px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-lg transition-colors flex items-center gap-2">
                     <i class="fa-solid fa-arrows-rotate w-4 h-4"></i>
                     <span class="hidden sm:inline">Refresh</span>
@@ -123,47 +149,132 @@
 </div>
 
 <script>
-    // Auto-refresh functionality
-    let refreshInterval = null;
-    const checkbox = document.getElementById('auto-refresh');
-    const serviceSelect = document.getElementById('service-select');
-    
-    checkbox.addEventListener('change', function() {
-        if (this.checked) {
-            refreshInterval = setInterval(function() {
-                const service = serviceSelect.value;
-                const priority = document.getElementById('priority-select').value;
-                if (service) {
-                    let url = '/api/integration-logs/entries?service=' + encodeURIComponent(service);
-                    if (priority) {
-                        url += '&priority=' + encodeURIComponent(priority);
-                    }
-                    htmx.ajax('GET', url, '#integration-log-entries');
-                }
-            }, 10000);
+    // --- Multi-select helpers ---
+    function getSelectedServices() {
+        return Array.from(document.querySelectorAll('input[name="service-checkbox"]:checked'))
+                    .map(cb => cb.value);
+    }
+
+    function updateServiceLabel() {
+        const selected = getSelectedServices();
+        const label = document.getElementById('service-dropdown-label');
+        if (selected.length === 0) {
+            label.textContent = 'Select services...';
+            label.classList.add('text-gray-500', 'dark:text-gray-400');
+            label.classList.remove('text-gray-900', 'dark:text-white');
+        } else if (selected.length === 1) {
+            const cb = document.querySelector(`input[name="service-checkbox"][value="${CSS.escape(selected[0])}"]`);
+            label.textContent = cb ? cb.closest('label').querySelector('span').textContent.trim() : selected[0];
+            label.classList.remove('text-gray-500', 'dark:text-gray-400');
+            label.classList.add('text-gray-900', 'dark:text-white');
         } else {
-            if (refreshInterval) {
-                clearInterval(refreshInterval);
-                refreshInterval = null;
-            }
+            label.textContent = selected.length + ' services selected';
+            label.classList.remove('text-gray-500', 'dark:text-gray-400');
+            label.classList.add('text-gray-900', 'dark:text-white');
+        }
+        // Update select-all checkbox state
+        const all = document.querySelectorAll('input[name="service-checkbox"]');
+        const allCheckbox = document.getElementById('service-select-all');
+        if (allCheckbox) {
+            allCheckbox.checked = selected.length === all.length;
+            allCheckbox.indeterminate = selected.length > 0 && selected.length < all.length;
+        }
+    }
+
+    function toggleServiceDropdown() {
+        const panel = document.getElementById('service-dropdown-panel');
+        const chevron = document.getElementById('service-dropdown-chevron');
+        panel.classList.toggle('hidden');
+        chevron.classList.toggle('rotate-180');
+        // Close priority dropdown if open
+        document.getElementById('priority-dropdown-panel').classList.add('hidden');
+        document.getElementById('priority-dropdown-chevron').classList.remove('rotate-180');
+    }
+
+    function toggleAllServices(source) {
+        document.querySelectorAll('input[name="service-checkbox"]').forEach(cb => {
+            cb.checked = source.checked;
+        });
+        updateServiceLabel();
+        fetchLogs();
+    }
+
+    function onServiceChange() {
+        updateServiceLabel();
+        fetchLogs();
+    }
+
+    // --- Priority dropdown ---
+    function togglePriorityDropdown() {
+        const panel = document.getElementById('priority-dropdown-panel');
+        const chevron = document.getElementById('priority-dropdown-chevron');
+        panel.classList.toggle('hidden');
+        chevron.classList.toggle('rotate-180');
+        // Close service dropdown if open
+        document.getElementById('service-dropdown-panel').classList.add('hidden');
+        document.getElementById('service-dropdown-chevron').classList.remove('rotate-180');
+    }
+
+    function selectPriority(value, label) {
+        document.getElementById('priority-select').value = value;
+        document.getElementById('priority-dropdown-label').textContent = label;
+        // Highlight selected option
+        document.querySelectorAll('.priority-option').forEach(btn => {
+            btn.classList.toggle('bg-gray-100', btn.dataset.value === value);
+            btn.classList.toggle('dark:bg-gray-600', btn.dataset.value === value);
+            btn.classList.toggle('font-medium', btn.dataset.value === value);
+        });
+        document.getElementById('priority-dropdown-panel').classList.add('hidden');
+        document.getElementById('priority-dropdown-chevron').classList.remove('rotate-180');
+        fetchLogs();
+    }
+
+    // Close dropdowns when clicking outside
+    document.addEventListener('click', function(e) {
+        const serviceContainer = document.getElementById('service-multiselect');
+        if (serviceContainer && !serviceContainer.contains(e.target)) {
+            document.getElementById('service-dropdown-panel').classList.add('hidden');
+            document.getElementById('service-dropdown-chevron').classList.remove('rotate-180');
+        }
+        const priorityContainer = document.getElementById('priority-dropdown');
+        if (priorityContainer && !priorityContainer.contains(e.target)) {
+            document.getElementById('priority-dropdown-panel').classList.add('hidden');
+            document.getElementById('priority-dropdown-chevron').classList.remove('rotate-180');
         }
     });
-    
-    // Download logs function
-    function downloadLogs() {
-        const service = document.getElementById('service-select').value;
+
+    // --- Core fetch function ---
+    function fetchLogs() {
+        const services = getSelectedServices();
         const priority = document.getElementById('priority-select').value;
-        if (!service) {
-            alert('Please select a service first');
+        if (services.length === 0) return;
+        const url = '/api/integration-logs/entries?service=' + encodeURIComponent(services.join(','))
+                    + '&priority=' + encodeURIComponent(priority);
+        htmx.ajax('GET', url, {target: '#integration-log-entries', swap: 'innerHTML'});
+    }
+
+    // --- Auto-refresh ---
+    let refreshInterval = null;
+    document.getElementById('auto-refresh').addEventListener('change', function() {
+        if (this.checked) {
+            refreshInterval = setInterval(fetchLogs, 10000);
+        } else {
+            clearInterval(refreshInterval);
+            refreshInterval = null;
+        }
+    });
+
+    // --- Download logs ---
+    function downloadLogs() {
+        const services = getSelectedServices();
+        const priority = document.getElementById('priority-select').value;
+        if (services.length === 0) {
+            alert('Please select at least one service first');
             return;
         }
-        
-        // Create download link with priority parameter
-        let url = '/api/integration-logs/download?service=' + encodeURIComponent(service);
-        if (priority) {
-            url += '&priority=' + encodeURIComponent(priority);
-        }
+        let url = '/api/integration-logs/download?service=' + encodeURIComponent(services.join(','));
+        if (priority) url += '&priority=' + encodeURIComponent(priority);
         window.location.href = url;
-    }
+    } 
 </script>
 {% endblock %}

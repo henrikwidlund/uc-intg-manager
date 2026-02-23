@@ -4541,8 +4541,8 @@ def get_integration_logs_entries():
     if not _get_active_remote_client():
         return render_template("partials/integration_log_entries.html", entries=[])
 
-    service = request.args.get("service", "")
-    if not service:
+    service_param = request.args.get("service", "")
+    if not service_param:
         return render_template("partials/integration_log_entries.html", entries=[])
 
     # Get priority filter from request, default to 7 (all levels)
@@ -4554,14 +4554,33 @@ def get_integration_logs_entries():
     except (ValueError, TypeError):
         priority = 7  # Default to all levels if invalid
 
+    # Support comma-separated service list
+    services = [s.strip() for s in service_param.split(",") if s.strip()]
+
     try:
-        # Fetch logs from the remote for the specified service and priority
-        logs = _get_active_remote_client().get_logs(
-            priority=priority,
-            service=service,
-            limit=1000,
-            as_text=False,  # Get as JSON
-        )
+        if len(services) == 1:
+            logs = _get_active_remote_client().get_logs(
+                priority=priority,
+                service=services[0],
+                limit=1000,
+                as_text=False,
+            )
+        else:
+            # Fetch logs for each service and merge, sorted newest-first
+            all_logs = []
+            per_service_limit = max(200, 1000 // len(services))
+            for svc in services:
+                svc_logs = _get_active_remote_client().get_logs(
+                    priority=priority,
+                    service=svc,
+                    limit=per_service_limit,
+                    as_text=False,
+                )
+                if isinstance(svc_logs, list):
+                    all_logs.extend(svc_logs)
+            # Sort merged results by timestamp descending
+            all_logs.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
+            logs = all_logs[:1000]
 
         return render_template("partials/integration_log_entries.html", entries=logs)
     except SyncAPIError as e:
@@ -4575,8 +4594,8 @@ def download_integration_logs():
     if not _get_active_remote_client():
         return "Not connected to remote", 500
 
-    service = request.args.get("service", "")
-    if not service:
+    service_param = request.args.get("service", "")
+    if not service_param:
         return "No service specified", 400
 
     # Get priority filter from request, default to 7 (all levels)
@@ -4588,38 +4607,47 @@ def download_integration_logs():
     except (ValueError, TypeError):
         priority = 7  # Default to all levels if invalid
 
+    services = [s.strip() for s in service_param.split(",") if s.strip()]
+
+    priority_labels = {
+        0: "emergency",
+        1: "alert",
+        2: "critical",
+        3: "error",
+        4: "warning",
+        5: "notice",
+        6: "info",
+        7: "debug",
+    }
+    priority_label = priority_labels.get(priority, "all")
+
     try:
-        # Fetch logs as text export with specified priority
-        log_text = _get_active_remote_client().get_logs(
-            priority=priority,
-            service=service,
-            limit=10000,  # Maximum allowed
-            as_text=True,  # Get as text export
-        )
+        if len(services) == 1:
+            log_text = _get_active_remote_client().get_logs(
+                priority=priority,
+                service=services[0],
+                limit=10000,
+                as_text=True,
+            )
+            if not isinstance(log_text, str):
+                return "Failed to retrieve logs as text", 500
+            base_name = services[0].replace("custom-intg-", "").replace("intg-", "")
+            filename = f"{base_name}_logs_{priority_label}+.txt"
+        else:
+            # Fetch each service as text and concatenate
+            parts = []
+            for svc in services:
+                svc_text = _get_active_remote_client().get_logs(
+                    priority=priority,
+                    service=svc,
+                    limit=10000,
+                    as_text=True,
+                )
+                if isinstance(svc_text, str) and svc_text.strip():
+                    parts.append(f"=== {svc} ===\n{svc_text}")
+            log_text = "\n\n".join(parts)
+            filename = f"integration_logs_{priority_label}+.txt"
 
-        # Ensure we got a string response
-        if not isinstance(log_text, str):
-            return "Failed to retrieve logs as text", 500
-
-        # Create filename from service name and priority level
-        # Remove "custom-intg-" prefix for cleaner filename
-        base_name = service.replace("custom-intg-", "").replace("intg-", "")
-
-        # Add priority level to filename for clarity
-        priority_labels = {
-            0: "emergency",
-            1: "alert",
-            2: "critical",
-            3: "error",
-            4: "warning",
-            5: "notice",
-            6: "info",
-            7: "debug",
-        }
-        priority_label = priority_labels.get(priority, "all")
-        filename = f"{base_name}_logs_{priority_label}+.txt"
-
-        # Return as downloadable file
         return Response(
             log_text,
             mimetype="text/plain",
