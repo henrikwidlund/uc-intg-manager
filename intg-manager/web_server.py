@@ -4636,6 +4636,15 @@ def download_integration_logs():
 
 
 @app.context_processor
+def inject_remote_configurator_url():
+    """Inject the active remote's web configurator URL into all templates."""
+    client = _get_active_remote_client()
+    if client and client._address:
+        return {"remote_configurator_url": f"http://{client._address}"}
+    return {"remote_configurator_url": None}
+
+
+@app.context_processor
 def inject_system_messages_count():
     """Inject unread system messages count into all templates."""
     try:
