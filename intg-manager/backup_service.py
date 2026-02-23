@@ -191,25 +191,52 @@ def backup_integration(
 
         _LOG.debug("Backup PUT response: %s", backup_response)
 
-        # Brief pause before next request
-        time.sleep(API_DELAY * 2)
+        # Step 5: Poll for the updated setup page with backup data.
+        # The integration may take a moment to process (e.g. connecting to the device
+        # to gather config). We poll until state == WAIT_USER_ACTION with backup_data
+        # present, rather than relying on a single fixed-delay GET which can fire before
+        # the integration has finished and receive state == SETUP instead.
+        _POLL_INTERVAL = API_DELAY        # seconds between polls
+        _POLL_TIMEOUT = 15                # seconds total before giving up
+        _poll_start = time.monotonic()
+        setup_response = None
+        backup_data = None
 
-        # Step 5: Get the updated setup page with backup data
-        setup_response = client.get_setup(driver_id)
-        if not setup_response:
-            _LOG.error("No response from get_setup after backup for %s", driver_id)
-            client.complete_setup(driver_id)
-            return None
+        while time.monotonic() - _poll_start < _POLL_TIMEOUT:
+            time.sleep(_POLL_INTERVAL)
+            poll_response = client.get_setup(driver_id)
+            if not poll_response:
+                _LOG.error("No response from get_setup after backup for %s", driver_id)
+                client.complete_setup(driver_id)
+                return None
 
-        _LOG.debug("Get setup response (with backup data): %s", setup_response)
+            _LOG.debug("Get setup response (with backup data): %s", poll_response)
 
-        # Brief pause before next request
-        time.sleep(API_DELAY * 2)
+            # Check if the integration has transitioned to WAIT_USER_ACTION
+            # with backup_data ready
+            if poll_response.get("state") == "WAIT_USER_ACTION":
+                backup_data = _extract_backup_data(poll_response)
+                if backup_data:
+                    setup_response = poll_response
+                    break
+                # WAIT_USER_ACTION but no backup_data yet — keep polling
+            elif poll_response.get("state") not in ("SETUP", "WAIT_USER_ACTION"):
+                # Unexpected terminal state — abort
+                _LOG.warning(
+                    "Unexpected setup state '%s' while waiting for backup data for %s",
+                    poll_response.get("state"),
+                    driver_id,
+                )
+                client.complete_setup(driver_id)
+                return None
 
         # Step 6: Extract the backup data
-        backup_data = _extract_backup_data(setup_response)
         if not backup_data:
-            _LOG.warning("No backup data found in response for %s", driver_id)
+            _LOG.warning(
+                "No backup data found in response for %s after %.1fs",
+                driver_id,
+                time.monotonic() - _poll_start,
+            )
             client.complete_setup(driver_id)
             return None
 
