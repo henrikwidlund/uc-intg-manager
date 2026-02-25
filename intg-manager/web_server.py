@@ -46,7 +46,10 @@ from data_migration import migrate as migrate_v1_to_v2
 from flask import Flask, Response, jsonify, render_template, request, send_file, session
 from log_handler import get_log_entries, get_log_handler
 from migration_service import extract_migration_mappings
-from notification_manager import get_notification_manager, send_notification_sync
+from notification_manager import (
+    get_notification_manager as _nm_get_notification_manager,
+    send_notification_sync,
+)
 from notification_service import NotificationService, _get_ssl_context
 from notification_settings import (
     DiscordNotificationConfig,
@@ -141,6 +144,18 @@ def _get_active_remote_client() -> SyncRemoteClient | None:
     if remote_id:
         return _remote_clients.get(remote_id)
     return None
+
+
+def get_notification_manager(remote_id: str | None = None):
+    """Get the notification manager for a remote, injecting the friendly name from config."""
+    rid = remote_id or get_active_remote_id()
+    # Only prefix notifications with the remote name when multiple remotes are configured,
+    # since a prefix is redundant when there's only one remote.
+    if len(_remote_configs) > 1 and rid and rid in _remote_configs:
+        name = _remote_configs[rid].name
+    else:
+        name = ""
+    return _nm_get_notification_manager(rid, remote_name=name)
 
 
 def _load_settings() -> Settings:

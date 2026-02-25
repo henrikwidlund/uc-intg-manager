@@ -24,12 +24,14 @@ class NotificationManager:
     to all enabled providers when specific events occur.
     """
 
-    def __init__(self, remote_id: str) -> None:
+    def __init__(self, remote_id: str, remote_name: str = "") -> None:
         """Initialize the notification manager.
 
         :param remote_id: The remote identifier this manager is for
+        :param remote_name: Friendly display name of the remote
         """
         self._remote_id = remote_id
+        self._remote_name = remote_name
         self._service = NotificationService()
         # Track what we've already notified about to avoid spam
         self._notified_updates: set[str] = set()  # {driver_id:version}
@@ -142,6 +144,20 @@ class NotificationManager:
         """Check if any notification provider is enabled."""
         return settings.is_any_enabled()
 
+    def _remote_title(self, title: str) -> str:
+        """Prefix a notification title with the remote name."""
+        if self._remote_name:
+            return f"{self._remote_name}: {title}"
+        return title
+
+    def _remote_data(self, data: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Return data dict enriched with remote identity fields."""
+        result = dict(data) if data else {}
+        result["remote_id"] = self._remote_id
+        if self._remote_name:
+            result["remote_name"] = self._remote_name
+        return result
+
     async def notify_integration_update_available(
         self,
         driver_id: str,
@@ -188,12 +204,12 @@ class NotificationManager:
             _LOG.info("Notification already sent for this version")
             return
 
-        title = "Integration Update Available"
+        title = self._remote_title("Integration Update Available")
         message = f"{integration_name} can be updated from {current_version} to {latest_version}"
 
         _LOG.info("Sending notification: title='%s', message='%s'", title, message)
         try:
-            await self._service.send_all(settings, title, message)
+            await self._service.send_all(settings, title, message, data=self._remote_data())
             self._notified_updates.add(notification_key)
             self._save_notification_state()  # Persist to disk
             _LOG.info("Sent update notification for %s", integration_name)
@@ -265,14 +281,14 @@ class NotificationManager:
         if self._notified_errors.get(driver_id) == state:
             return
 
-        title = "Integration Error"
+        title = self._remote_title("Integration Error")
         message = f"{integration_name} has entered an error state: {state}"
 
         _LOG.debug(
             "Sending error notification: title='%s', message='%s'", title, message
         )
         try:
-            await self._service.send_all(settings, title, message, priority=1)
+            await self._service.send_all(settings, title, message, data=self._remote_data(), priority=1)
             self._notified_errors[driver_id] = state
             self._save_notification_state()  # Persist to disk
             _LOG.info("Sent error state notification for %s", integration_name)
@@ -335,7 +351,7 @@ class NotificationManager:
         if count == 0:
             return
 
-        title = "Orphaned Entities Detected"
+        title = self._remote_title("Orphaned Entities Detected")
         message = f"{count} activit{'y' if count == 1 else 'ies'} with orphaned entities: {', '.join(new_activity_names)}"
 
         _LOG.info(
@@ -344,7 +360,7 @@ class NotificationManager:
             message,
         )
         try:
-            await self._service.send_all(settings, title, message, priority=1)
+            await self._service.send_all(settings, title, message, data=self._remote_data(), priority=1)
             # Update tracked activities
             self._notified_orphaned_activities.update(new_activity_ids)
             self._save_notification_state()
@@ -478,10 +494,11 @@ class NotificationManager:
 _notification_managers: dict[str, NotificationManager] = {}
 
 
-def get_notification_manager(remote_id: str | None = None) -> NotificationManager:
+def get_notification_manager(remote_id: str | None = None, remote_name: str = "") -> NotificationManager:
     """Get the notification manager instance for a remote.
 
     :param remote_id: Remote identifier. If None, returns manager for first available remote.
+    :param remote_name: Friendly display name of the remote (used to prefix notification titles).
     :return: NotificationManager instance for the specified remote
     """
     global _notification_managers
@@ -507,7 +524,10 @@ def get_notification_manager(remote_id: str | None = None) -> NotificationManage
 
     # Get or create manager for this remote
     if remote_id not in _notification_managers:
-        _notification_managers[remote_id] = NotificationManager(remote_id)
+        _notification_managers[remote_id] = NotificationManager(remote_id, remote_name)
+    elif remote_name and _notification_managers[remote_id]._remote_name != remote_name:
+        # Update name if it changed (e.g. remote was renamed)
+        _notification_managers[remote_id]._remote_name = remote_name
 
     return _notification_managers[remote_id]
 

@@ -137,13 +137,19 @@ class NotificationService:
         if config.headers:
             headers.update(config.headers)
 
-        payload = {
+        payload: dict[str, Any] = {
             "title": title,
             "message": message,
             "timestamp": data.get("timestamp") if data else None,
         }
         if data:
             payload.update(data)
+        # Ensure remote identity fields are always present at the top level
+        # (data.update above may have already added them, but be explicit)
+        if data and data.get("remote_id"):
+            payload["remote_id"] = data["remote_id"]
+        if data and data.get("remote_name"):
+            payload["remote_name"] = data["remote_name"]
 
         try:
             ssl_context = _get_ssl_context()
