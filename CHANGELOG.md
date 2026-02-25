@@ -9,8 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Changes in the next release_
 
----
-
 ## v1.5.2 - 2026-02-23
 ### Added
 - **Remote section in sidebar** — Quick-access links to the active remote's Web Configurator and Core REST API documentation
