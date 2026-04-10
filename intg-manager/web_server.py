@@ -227,6 +227,14 @@ _cached_version_data: dict = {}
 _version_check_timestamp: str | None = None
 _cached_driver_ids: set = set()  # Track installed driver IDs to detect changes
 
+# System update info cache keyed by remote_id
+_system_update_cache: dict[str, dict] = {}
+
+
+def set_system_update_info(remote_id: str, update_info: dict) -> None:
+    """Cache system firmware update info for a remote (called from device.py)."""
+    _system_update_cache[remote_id] = update_info
+
 # Operation lock to prevent concurrent installs/upgrades
 _operation_in_progress: bool = False
 _operation_lock = threading.Lock()
@@ -4780,12 +4788,47 @@ def refresh_system_messages():
 @app.route("/diagnostics")
 def diagnostics_page():
     """Render the diagnostics page."""
+    remote_id = get_active_remote_id()
+    system_update = _system_update_cache.get(remote_id, {}) if remote_id else {}
     return render_template(
         "diagnostics.html",
         remote_address=_get_active_remote_client()._address
         if _get_active_remote_client()
         else "localhost",
+        system_update=system_update,
     )
+
+
+@app.route("/api/diagnostics/system-update-check", methods=["POST"])
+def system_update_check():
+    """Trigger an immediate firmware update check on the remote and return updated status."""
+    client = _get_active_remote_client()
+    if not client:
+        return jsonify({"success": False, "message": "No remote connected"}), 503
+    try:
+        update_info = client.check_system_update()
+        remote_id = get_active_remote_id()
+        if remote_id:
+            _system_update_cache[remote_id] = update_info
+        installed = update_info.get("installed_version", "Unknown")
+        available = update_info.get("available", [])
+        if available:
+            latest = available[0]
+            return jsonify({
+                "success": True,
+                "installed_version": installed,
+                "update_available": True,
+                "available_version": latest.get("version", ""),
+                "title": latest.get("title", ""),
+                "release_notes_url": latest.get("release_notes_url", ""),
+            })
+        return jsonify({
+            "success": True,
+            "installed_version": installed,
+            "update_available": False,
+        })
+    except SyncAPIError as e:
+        return jsonify({"success": False, "message": str(e)}), 500
 
 
 @app.route("/api/diagnostics/orphaned-entities")

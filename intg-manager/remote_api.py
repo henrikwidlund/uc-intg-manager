@@ -234,6 +234,15 @@ class RemoteAPIClient:
 
         return await self._request("GET", "/system/power/charger")
 
+    async def get_system_update(self) -> dict[str, Any]:
+        """
+        Get system firmware update information.
+
+        :return: Update info including installed_version and list of available updates
+        :raises RemoteAPIError: If the request fails
+        """
+        return await self._request("GET", "/system/update") or {}
+
     async def is_docked(self) -> bool:
         """
         Check if the remote is currently charging (docked or wireless).

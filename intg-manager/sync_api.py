@@ -155,6 +155,24 @@ class SyncRemoteClient:
         except SyncAPIError:
             return False
 
+    def get_system_update(self) -> dict[str, Any]:
+        """
+        Get system firmware update information.
+
+        :return: Update info including installed_version and available updates
+        :raises SyncAPIError: If the request fails
+        """
+        return self._request("GET", "/system/update") or {}
+
+    def check_system_update(self) -> dict[str, Any]:
+        """
+        Trigger an immediate firmware update check on the remote.
+
+        :return: Update info returned directly from the PUT response
+        :raises SyncAPIError: If the request fails
+        """
+        return self._request("PUT", "/system/update") or {}
+
     def reboot_remote(self) -> bool:
         """
         Reboot the remote.

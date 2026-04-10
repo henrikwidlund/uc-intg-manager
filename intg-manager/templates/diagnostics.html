@@ -8,6 +8,60 @@
     <p class="text-sm sm:text-base text-gray-600 dark:text-gray-400">Identify and troubleshoot issues with your integrations and activities</p>
 </div>
 
+<!-- System Firmware Section -->
+<div id="firmware-section" class="mb-8 bg-uc-light-card dark:bg-uc-card border border-uc-light-border dark:border-uc-border rounded-lg p-5">
+    <div class="flex items-center justify-between mb-4">
+        <div class="flex items-center gap-3">
+            <div id="firmware-icon" class="w-10 h-10 {% if system_update and system_update.available %}bg-yellow-500/20{% else %}bg-green-500/20{% endif %} rounded-lg flex items-center justify-center">
+                <i id="firmware-icon-i" class="fa-solid fa-microchip {% if system_update and system_update.available %}text-yellow-400{% else %}text-green-400{% endif %} text-lg"></i>
+            </div>
+            <div>
+                <h2 class="text-xl font-semibold text-gray-900 dark:text-white">System Firmware</h2>
+                <p class="text-sm text-gray-600 dark:text-gray-400">Remote firmware status</p>
+            </div>
+        </div>
+        <button id="firmware-check-btn" onclick="checkForFirmwareUpdate()"
+                class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors flex items-center gap-2 text-sm">
+            <i id="firmware-check-icon" class="fa-solid fa-arrows-rotate"></i>
+            Check for Updates
+        </button>
+    </div>
+    <div id="firmware-details" class="flex flex-wrap gap-6">
+        <div>
+            <div class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Installed Version</div>
+            <div id="firmware-installed" class="text-sm font-semibold text-gray-900 dark:text-white">{{ system_update.installed_version if system_update else '—' }}</div>
+        </div>
+        <div id="firmware-status-block">
+            {% if system_update and system_update.available %}
+            <div class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Update Available</div>
+            <div class="flex items-center gap-2">
+                <span id="firmware-available-version" class="text-sm font-semibold text-yellow-400">{{ system_update.available[0].version }}</span>
+                <span class="text-xs text-gray-500 dark:text-gray-400" id="firmware-available-title">— {{ system_update.available[0].title }}</span>
+                {% if system_update.available[0].release_notes_url %}
+                <a id="firmware-release-notes" href="{{ system_update.available[0].release_notes_url }}" target="_blank" rel="noopener noreferrer"
+                   class="text-xs text-blue-400 hover:text-blue-300 underline ml-1">Release Notes</a>
+                {% endif %}
+            </div>
+            {% elif system_update %}
+            <div class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Status</div>
+            <div class="flex items-center gap-1.5">
+                <i class="fa-solid fa-circle-check text-green-400 text-sm"></i>
+                <span class="text-sm text-green-400 font-medium">Up to date</span>
+            </div>
+            {% else %}
+            <div class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Status</div>
+            <div class="text-sm text-gray-500 dark:text-gray-400">Click "Check for Updates" to check firmware status</div>
+            {% endif %}
+        </div>
+        {% if system_update and system_update.last_check_date %}
+        <div>
+            <div class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Last Checked</div>
+            <div id="firmware-last-checked" class="text-sm text-gray-600 dark:text-gray-400">{{ system_update.last_check_date[:10] }}</div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
 <!-- Quick Navigation -->
 <div class="mb-8 bg-uc-light-card dark:bg-uc-card border border-uc-light-border dark:border-uc-border rounded-lg p-4">
     <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-400 uppercase tracking-wide mb-3">Jump to Section</h3>
@@ -226,6 +280,57 @@
 <!-- Additional diagnostic sections will be added here -->
 
 <script>
+function checkForFirmwareUpdate() {
+    const btn = document.getElementById('firmware-check-btn');
+    const icon = document.getElementById('firmware-check-icon');
+    btn.disabled = true;
+    icon.classList.add('fa-spin');
+
+    fetch('/api/diagnostics/system-update-check', { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success) {
+                alert('Update check failed: ' + (data.message || 'Unknown error'));
+                return;
+            }
+            // Update installed version
+            document.getElementById('firmware-installed').textContent = data.installed_version || '—';
+
+            // Update status block
+            const statusBlock = document.getElementById('firmware-status-block');
+            const iconEl = document.getElementById('firmware-icon-i');
+            const iconWrap = document.getElementById('firmware-icon');
+            if (data.update_available) {
+                iconWrap.className = 'w-10 h-10 bg-yellow-500/20 rounded-lg flex items-center justify-center';
+                iconEl.className = 'fa-solid fa-microchip text-yellow-400 text-lg';
+                const notesLink = data.release_notes_url
+                    ? `<a href="${data.release_notes_url}" target="_blank" rel="noopener noreferrer" class="text-xs text-blue-400 hover:text-blue-300 underline ml-1">Release Notes</a>`
+                    : '';
+                statusBlock.innerHTML = `
+                    <div class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Update Available</div>
+                    <div class="flex items-center gap-2">
+                        <span class="text-sm font-semibold text-yellow-400">${data.available_version}</span>
+                        <span class="text-xs text-gray-500 dark:text-gray-400">— ${data.title}</span>
+                        ${notesLink}
+                    </div>`;
+            } else {
+                iconWrap.className = 'w-10 h-10 bg-green-500/20 rounded-lg flex items-center justify-center';
+                iconEl.className = 'fa-solid fa-microchip text-green-400 text-lg';
+                statusBlock.innerHTML = `
+                    <div class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Status</div>
+                    <div class="flex items-center gap-1.5">
+                        <i class="fa-solid fa-circle-check text-green-400 text-sm"></i>
+                        <span class="text-sm text-green-400 font-medium">Up to date</span>
+                    </div>`;
+            }
+        })
+        .catch(e => alert('Update check failed: ' + e.message))
+        .finally(() => {
+            btn.disabled = false;
+            icon.classList.remove('fa-spin');
+        });
+}
+
 function rebootRemote() {
     const statusEl = document.getElementById('system-control-status');
     statusEl.innerHTML = '<div class="bg-blue-500/20 border border-blue-500/30 rounded-lg p-4 text-blue-300 flex items-center gap-2"><i class="fa-solid fa-spinner fa-spin"></i> Sending reboot command...</div>';

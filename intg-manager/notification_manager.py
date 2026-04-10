@@ -38,6 +38,7 @@ class NotificationManager:
         self._notified_errors: dict[str, str] = {}  # {driver_id: error_state}
         self._consecutive_errors: dict[str, int] = {}  # {driver_id: count}
         self._notified_orphaned_activities: set[str] = set()  # {activity_id}
+        self._notified_firmware_versions: set[str] = set()  # {version}
         # Load persisted notification state from disk
         self._load_notification_state()
 
@@ -66,6 +67,9 @@ class NotificationManager:
                     )
                     self._notified_orphaned_activities = set(
                         notification_state.get("notified_orphaned_activities", [])
+                    )
+                    self._notified_firmware_versions = set(
+                        notification_state.get("notified_firmware_versions", [])
                     )
                     _LOG.debug(
                         "[%s] Loaded notification state: %d updates, %d errors, %d orphaned activities",
@@ -120,6 +124,7 @@ class NotificationManager:
                 "notified_orphaned_activities": list(
                     self._notified_orphaned_activities
                 ),
+                "notified_firmware_versions": list(self._notified_firmware_versions),
             }
 
             # Ensure directory exists
@@ -367,6 +372,60 @@ class NotificationManager:
             _LOG.info("Sent orphaned entities notification for %d activities", count)
         except Exception as e:
             _LOG.error("Failed to send orphaned entities notification: %s", e)
+
+    async def notify_firmware_update(
+        self,
+        installed_version: str,
+        available_version: str,
+        title: str,
+    ) -> None:
+        """
+        Notify when a firmware update is available for the remote.
+
+        Only sends once per available version.
+
+        :param installed_version: Currently installed firmware version
+        :param available_version: Version available for update
+        :param title: Update title from the API
+        """
+        settings = self._load_settings()
+        if (
+            not self._should_notify(settings)
+            or not settings.triggers.firmware_update_available
+        ):
+            return
+
+        if available_version in self._notified_firmware_versions:
+            _LOG.debug(
+                "[%s] Already notified for firmware version %s",
+                self._remote_id,
+                available_version,
+            )
+            return
+
+        notification_title = self._remote_title("Firmware Update Available")
+        message = f"{title} ({available_version}) is available. Currently installed: {installed_version}"
+
+        _LOG.info(
+            "[%s] Sending firmware update notification: %s -> %s",
+            self._remote_id,
+            installed_version,
+            available_version,
+        )
+        try:
+            await self._service.send_all(
+                settings,
+                notification_title,
+                message,
+                data=self._remote_data(
+                    {"installed_version": installed_version, "available_version": available_version}
+                ),
+            )
+            self._notified_firmware_versions.add(available_version)
+            self._save_notification_state()
+            _LOG.info("[%s] Sent firmware update notification for %s", self._remote_id, available_version)
+        except Exception as e:
+            _LOG.error("[%s] Failed to send firmware update notification: %s", self._remote_id, e)
 
     def clear_orphaned_activities(self, activity_ids: list[str]) -> None:
         """

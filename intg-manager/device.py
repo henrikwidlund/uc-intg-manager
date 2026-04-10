@@ -25,8 +25,9 @@ from const import (
     MANAGER_DATA_FILE,
 )
 from remote_api import RemoteAPIClient, RemoteAPIError
-from web_server import WebServer
+from web_server import WebServer, set_system_update_info
 from ucapi_framework import BaseConfigManager, PollingDevice, BaseIntegrationDriver
+from notification_manager import get_notification_manager as _get_nm
 
 _LOG = logging.getLogger(__name__)
 
@@ -380,6 +381,7 @@ class IntegrationManagerDevice(PollingDevice):
 
         if periodic_check:
             poll_tasks.append("versions/orphans/registry")
+            poll_tasks.append("system-update")
         if self._is_owner() and periodic_check:
             poll_tasks.append("repo-batch")
         poll_tasks.append("backup-check")
@@ -425,6 +427,9 @@ class IntegrationManagerDevice(PollingDevice):
             ):
                 # Per-remote task: Check integration versions for this remote
                 await self._check_integration_versions()
+
+                # Per-remote task: Check for system firmware updates
+                await self._check_system_update()
 
                 # Shared task: Fetch repository batch (owner only)
                 if self._is_owner():
@@ -607,6 +612,55 @@ class IntegrationManagerDevice(PollingDevice):
             _LOG.debug("[%s] Integration checks complete", self.log_id)
         except Exception as e:
             _LOG.warning("[%s] Failed to check integrations: %s", self.log_id, e)
+
+    async def _check_system_update(self) -> None:
+        """
+        Check for system firmware updates and notify if a new version is available.
+
+        Stores the update info in web_server for the diagnostics page.
+        Only sends one notification per available firmware version.
+        """
+        web_server = _web_server_instance
+        try:
+            update_info = await self._client.get_system_update()
+            if not update_info:
+                return
+
+            # Cache for diagnostics page
+            if web_server:
+                set_system_update_info(self.identifier, update_info)
+
+            installed = update_info.get("installed_version", "")
+            available = update_info.get("available", [])
+
+            if not available:
+                _LOG.debug(
+                    "[%s] System firmware is up to date (%s)", self.log_id, installed
+                )
+                return
+
+            latest = available[0]
+            latest_version = latest.get("version", "")
+            latest_title = latest.get("title", f"Firmware {latest_version}")
+
+            _LOG.info(
+                "[%s] Firmware update available: %s -> %s",
+                self.log_id,
+                installed,
+                latest_version,
+            )
+
+            nm = _get_nm(self.identifier)
+            await nm.notify_firmware_update(
+                installed_version=installed,
+                available_version=latest_version,
+                title=latest_title,
+            )
+
+        except RemoteAPIError as e:
+            _LOG.debug("[%s] Failed to check system update: %s", self.log_id, e)
+        except Exception as e:
+            _LOG.warning("[%s] Error checking system update: %s", self.log_id, e)
 
     def _is_backup_time(self, backup_time_str: str) -> bool:
         """

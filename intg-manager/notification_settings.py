@@ -106,6 +106,9 @@ class NotificationTriggers:
     orphaned_entities_detected: bool = True
     """Notify when orphaned entities are detected in activities."""
 
+    firmware_update_available: bool = True
+    """Notify when a firmware update is available for the remote."""
+
 
 @dataclass
 class NotificationSettings:
