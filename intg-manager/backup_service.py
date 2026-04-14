@@ -15,6 +15,7 @@ The backup flow:
 :license: Mozilla Public License Version 2.0, see LICENSE for more details.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -23,7 +24,7 @@ from datetime import datetime
 from typing import Any
 
 from const import MANAGER_DATA_FILE, API_DELAY, Settings
-from sync_api import SyncRemoteClient, SyncAPIError
+from sync_api import RemoteClient, SyncAPIError
 
 _LOG = logging.getLogger(__name__)
 
@@ -117,8 +118,8 @@ def _extract_backup_data(setup_response: dict[str, Any]) -> str | None:
         return None
 
 
-def backup_integration(
-    client: SyncRemoteClient,
+async def backup_integration(
+    client: RemoteClient,
     driver_id: str,
     save_to_file: bool = True,
     remote_id: str | None = None,
@@ -132,7 +133,7 @@ def backup_integration(
     3. Send backup action request
     4. Extract and return the backup data
 
-    :param client: The SyncRemoteClient instance
+    :param client: The RemoteClient instance
     :param driver_id: The driver ID to backup
     :param save_to_file: Whether to save to integration_backups.json
     :param remote_id: Remote identifier for namespacing backups
@@ -142,7 +143,7 @@ def backup_integration(
 
     try:
         # Step 1: Start the setup flow (this just initiates setup mode)
-        start_response = client.start_setup(driver_id, reconfigure=True)
+        start_response = await client.start_setup(driver_id, reconfigure=True)
         if not start_response:
             _LOG.error("No response from start_setup for %s", driver_id)
             return None
@@ -150,10 +151,10 @@ def backup_integration(
         _LOG.debug("Start setup response: %s", start_response)
 
         # Brief pause before next request
-        time.sleep(API_DELAY)
+        await asyncio.sleep(API_DELAY)
 
         # Step 2: Get the setup page with choices
-        setup_response = client.get_setup(driver_id)
+        setup_response = await client.get_setup(driver_id)
         if not setup_response:
             _LOG.error("No response from get_setup for %s", driver_id)
             return None
@@ -161,7 +162,7 @@ def backup_integration(
         _LOG.debug("Get setup response: %s", setup_response)
 
         # Brief pause before next request
-        time.sleep(API_DELAY)
+        await asyncio.sleep(API_DELAY)
 
         # Step 3: Extract the first choice ID
         choice_id = _extract_first_choice_id(setup_response)
@@ -172,7 +173,7 @@ def backup_integration(
                 driver_id,
             )
             # Try to cancel the setup flow
-            client.complete_setup(driver_id)
+            await client.complete_setup(driver_id)
             return None
 
         _LOG.debug("Found choice ID: %s", choice_id)
@@ -183,10 +184,10 @@ def backup_integration(
             "action": "backup",
             "backup_data": "[]",  # Empty initial value
         }
-        backup_response = client.send_setup_input(driver_id, input_values)
+        backup_response = await client.send_setup_input(driver_id, input_values)
         if not backup_response:
             _LOG.error("No response from backup request for %s", driver_id)
-            client.complete_setup(driver_id)
+            await client.complete_setup(driver_id)
             return None
 
         _LOG.debug("Backup PUT response: %s", backup_response)
@@ -196,18 +197,18 @@ def backup_integration(
         # to gather config). We poll until state == WAIT_USER_ACTION with backup_data
         # present, rather than relying on a single fixed-delay GET which can fire before
         # the integration has finished and receive state == SETUP instead.
-        _POLL_INTERVAL = API_DELAY        # seconds between polls
-        _POLL_TIMEOUT = 15                # seconds total before giving up
+        _POLL_INTERVAL = API_DELAY  # seconds between polls
+        _POLL_TIMEOUT = 15  # seconds total before giving up
         _poll_start = time.monotonic()
         setup_response = None
         backup_data = None
 
         while time.monotonic() - _poll_start < _POLL_TIMEOUT:
-            time.sleep(_POLL_INTERVAL)
-            poll_response = client.get_setup(driver_id)
+            await asyncio.sleep(_POLL_INTERVAL)
+            poll_response = await client.get_setup(driver_id)
             if not poll_response:
                 _LOG.error("No response from get_setup after backup for %s", driver_id)
-                client.complete_setup(driver_id)
+                await client.complete_setup(driver_id)
                 return None
 
             _LOG.debug("Get setup response (with backup data): %s", poll_response)
@@ -227,7 +228,7 @@ def backup_integration(
                     poll_response.get("state"),
                     driver_id,
                 )
-                client.complete_setup(driver_id)
+                await client.complete_setup(driver_id)
                 return None
 
         # Step 6: Extract the backup data
@@ -237,17 +238,17 @@ def backup_integration(
                 driver_id,
                 time.monotonic() - _poll_start,
             )
-            client.complete_setup(driver_id)
+            await client.complete_setup(driver_id)
             return None
 
         _LOG.debug("Successfully extracted backup data for %s", driver_id)
 
         # Complete the setup flow (we're done)
-        client.complete_setup(driver_id)
+        await client.complete_setup(driver_id)
         _LOG.debug("Completed setup flow for %s", driver_id)
 
         # Brief pause after completing setup
-        time.sleep(API_DELAY)
+        await asyncio.sleep(API_DELAY)
 
         # Save to file if requested
         if save_to_file:
@@ -263,8 +264,8 @@ def backup_integration(
     except SyncAPIError as e:
         _LOG.error("API error during backup of %s: %s", driver_id, e)
         try:
-            client.complete_setup(driver_id)
-            time.sleep(API_DELAY)  # Brief pause after cleanup
+            await client.complete_setup(driver_id)
+            await asyncio.sleep(API_DELAY)  # Brief pause after cleanup
         except SyncAPIError:
             pass
         return None
@@ -436,15 +437,15 @@ def delete_backup(driver_id: str, remote_id: str | None = None) -> bool:
     return True
 
 
-def backup_all_integrations(
-    client: SyncRemoteClient,
+async def backup_all_integrations(
+    client: RemoteClient,
     include_settings: bool = True,
     remote_id: str | None = None,
 ) -> dict[str, bool]:
     """
     Backup all installed custom integrations and optionally settings.
 
-    :param client: The SyncRemoteClient instance
+    :param client: The RemoteClient instance
     :param include_settings: Whether to include settings in the backup
     :param remote_id: Remote identifier for the backup
     :return: Dictionary of driver_id -> success boolean
@@ -453,7 +454,7 @@ def backup_all_integrations(
 
     try:
         # Get all drivers
-        drivers = client.get_drivers()
+        drivers = await client.get_drivers()
 
         for driver in drivers:
             driver_id = driver.get("driver_id")
@@ -467,13 +468,13 @@ def backup_all_integrations(
                 continue
 
             _LOG.info("Backing up integration: %s", driver_id)
-            backup_data = backup_integration(
+            backup_data = await backup_integration(
                 client, driver_id, save_to_file=True, remote_id=remote_id
             )
             results[driver_id] = backup_data is not None
 
             # Pause between integrations to avoid overwhelming the remote
-            time.sleep(API_DELAY * 2)
+            await asyncio.sleep(API_DELAY * 2)
 
         # Save settings to backup file if requested
         if include_settings:

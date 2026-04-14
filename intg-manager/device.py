@@ -443,7 +443,7 @@ class IntegrationManagerDevice(PollingDevice):
             # Check for integration error states (disconnected, error, etc.) - runs every poll
             if web_server and web_server.is_running:
                 # Per-remote task: Check error states for this remote
-                web_server.check_error_states(self.identifier)
+                await web_server.check_error_states(self.identifier)
 
             # Web server health check - verify server is actually accessible when it should be running
             await self._check_web_server_health()
@@ -522,15 +522,15 @@ class IntegrationManagerDevice(PollingDevice):
                     )
                     try:
                         # Per-remote: Check for version updates
-                        self._web_server.refresh_integration_versions(self.identifier)
-
-                        # Per-remote: Check for new integrations in registry
-                        self._web_server.check_new_integrations(self.identifier)
-
-                        # Per-remote: Check for orphaned entities in activities (async version for startup)
-                        await self._web_server.check_orphaned_entities_async(
+                        await self._web_server.refresh_integration_versions(
                             self.identifier
                         )
+
+                        # Per-remote: Check for new integrations in registry
+                        await self._web_server.check_new_integrations(self.identifier)
+
+                        # Per-remote: Check for orphaned entities in activities
+                        await self._web_server.check_orphaned_entities(self.identifier)
 
                         # Shared (owner only): Check for new system messages from GitHub
                         if self._is_owner():
@@ -597,13 +597,13 @@ class IntegrationManagerDevice(PollingDevice):
         try:
             # Per-remote: Trigger the web server to refresh version data
             # This updates the cached update availability info and sends update notifications
-            web_server.refresh_integration_versions(self.identifier)
+            await web_server.refresh_integration_versions(self.identifier)
 
             # Per-remote: Check for new integrations in registry
-            web_server.check_new_integrations(self.identifier)
+            await web_server.check_new_integrations(self.identifier)
 
             # Per-remote: Check for orphaned entities in activities
-            web_server.check_orphaned_entities(self.identifier)
+            await web_server.check_orphaned_entities(self.identifier)
 
             # Shared (owner only): Check for new system messages from GitHub
             if self._is_owner():
@@ -726,11 +726,9 @@ class IntegrationManagerDevice(PollingDevice):
                 settings.backup_time,
             )
 
-            # Perform the backup via web server (run in executor since it's sync)
+            # Perform the backup via web server
             # Per-remote task: backup for this remote only
-            backup_result = await self._loop.run_in_executor(
-                None, web_server.perform_scheduled_backup, self.identifier
-            )
+            backup_result = await web_server.perform_scheduled_backup(self.identifier)
 
             # Update last backup date on success
             if backup_result:

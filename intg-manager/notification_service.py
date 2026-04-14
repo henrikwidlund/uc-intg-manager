@@ -55,7 +55,7 @@ class NotificationService:
             return False
 
         # Use configured service, fallback to 'notify' if not specified
-        service = getattr(config, 'service', 'notify') or 'notify'
+        service = getattr(config, "service", "notify") or "notify"
         url = f"{config.url.rstrip('/')}/api/services/notify/{service}"
         headers = {
             "Authorization": f"Bearer {config.token}",
@@ -77,22 +77,29 @@ class NotificationService:
                     url, headers=headers, json=payload, timeout=10
                 ) as resp:
                     if resp.status == 200:
-                        _LOG.info("Notification sent to Home Assistant successfully (service: %s)", service)
+                        _LOG.info(
+                            "Notification sent to Home Assistant successfully (service: %s)",
+                            service,
+                        )
                         return True
-                    
+
                     # If specific service failed and it's not the default, try fallback
                     if service != "notify":
                         _LOG.warning(
                             "Failed to send to service '%s' (%s), falling back to 'notify'",
                             service,
-                            resp.status
+                            resp.status,
                         )
-                        fallback_url = f"{config.url.rstrip('/')}/api/services/notify/notify"
+                        fallback_url = (
+                            f"{config.url.rstrip('/')}/api/services/notify/notify"
+                        )
                         async with session.post(
                             fallback_url, headers=headers, json=payload, timeout=10
                         ) as fallback_resp:
                             if fallback_resp.status == 200:
-                                _LOG.info("Notification sent to Home Assistant via fallback 'notify' service")
+                                _LOG.info(
+                                    "Notification sent to Home Assistant via fallback 'notify' service"
+                                )
                                 return True
                             _LOG.error(
                                 "Fallback also failed: %s %s",
