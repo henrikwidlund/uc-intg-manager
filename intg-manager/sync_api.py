@@ -1,14 +1,12 @@
 """
-Synchronous API Clients.
+API Clients.
 
-This module provides synchronous HTTP clients for use in Flask routes.
-Uses the `requests` library instead of aiohttp to avoid async context issues.
+This module provides async HTTP clients for use in Quart routes.
+Uses aiohttp for non-blocking I/O.
 
 :license: Mozilla Public License Version 2.0, see LICENSE for more details.
 """
 
-import asyncio
-import concurrent.futures
 import json
 import logging
 import os
@@ -17,6 +15,7 @@ import shutil
 from datetime import datetime
 from typing import Any
 
+import aiohttp
 import certifi
 import requests
 from const import (
@@ -26,24 +25,29 @@ from const import (
     MANAGER_DATA_FILE,
 )
 from packaging.version import InvalidVersion, Version
-from requests.auth import HTTPBasicAuth
 from ucapi_framework import find_orphaned_entities
 
 _LOG = logging.getLogger(__name__)
 
-# Default timeout for all requests (connect, read)
-REQUEST_TIMEOUT = (10, 30)
+# Default timeout for all requests (connect, read) in seconds
+REQUEST_TIMEOUT = aiohttp.ClientTimeout(connect=10, total=40)
+# Shorter timeout for connection tests
+CONNECT_TIMEOUT = aiohttp.ClientTimeout(connect=2, total=7)
+# Longer timeout for file downloads (30s connect, 5min total)
+DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(connect=30, total=330)
+# Sync timeout tuple kept for requests-based uses (fetch_repository_batch)
+_SYNC_REQUEST_TIMEOUT = (10, 30)
 
 
 class SyncAPIError(Exception):
     """Exception raised when API calls fail."""
 
 
-class SyncRemoteClient:
+class RemoteClient:
     """
-    Synchronous client for the Unfolded Circle Remote REST API.
+    Async client for the Unfolded Circle Remote REST API.
 
-    For use in Flask routes where async is problematic.
+    Uses aiohttp for non-blocking HTTP requests.
     """
 
     def __init__(
@@ -53,263 +57,207 @@ class SyncRemoteClient:
         api_key: str | None = None,
         port: int = 80,
     ) -> None:
-        """
-        Initialize the sync Remote API client.
-
-        :param address: IP address or hostname of the remote
-        :param pin: Web configurator PIN for Basic Auth
-        :param api_key: API key for Bearer token auth (preferred)
-        :param port: HTTP port (default 80)
-        """
         self._address = address
         self._pin = pin
         self._api_key = api_key
         self._port = port
         self._base_url = f"http://{address}:{port}/api"
+        self._ssl_context = False  # No SSL for local HTTP
 
-        # Set up session with auth and certifi certificates for HTTPS
-        self._session = requests.Session()
-        self._session.verify = certifi.where()  # Use certifi's certificate bundle
+        # Build auth headers
+        self._headers: dict[str, str] = {}
         if api_key:
-            self._session.headers["Authorization"] = f"Bearer {api_key}"
-        elif pin:
-            self._session.auth = HTTPBasicAuth("web-configurator", pin)
+            self._headers["Authorization"] = f"Bearer {api_key}"
 
-    def _request(
+        self._auth = (
+            aiohttp.BasicAuth("web-configurator", pin)
+            if (pin and not api_key)
+            else None
+        )
+
+    def _make_session(
+        self, timeout: aiohttp.ClientTimeout | None = None
+    ) -> aiohttp.ClientSession:
+        """Create a new aiohttp session with configured auth/headers."""
+        return aiohttp.ClientSession(
+            headers=self._headers,
+            auth=self._auth,
+            timeout=timeout or REQUEST_TIMEOUT,
+            connector=aiohttp.TCPConnector(ssl=self._ssl_context),
+        )
+
+    async def _request(
         self,
         method: str,
         endpoint: str,
-        timeout: tuple[int, int] | None = None,
+        timeout: aiohttp.ClientTimeout | None = None,
         **kwargs: Any,
     ) -> Any:
         """
-        Make an HTTP request to the Remote API.
+        Make an async HTTP request to the Remote API.
 
-        :param method: HTTP method (GET, POST, etc.)
-        :param endpoint: API endpoint (e.g., /intg/instances)
-        :param timeout: Optional timeout override (connect, read) in seconds
-        :param kwargs: Additional arguments for requests
-        :return: JSON response data
         :raises SyncAPIError: If the request fails
         """
         url = f"{self._base_url}{endpoint}"
-        kwargs.setdefault("timeout", timeout or REQUEST_TIMEOUT)
+        async with self._make_session(timeout) as session:
+            try:
+                async with session.request(method, url, **kwargs) as response:
+                    if response.status == 401:
+                        raise SyncAPIError(
+                            "Authentication failed. Check PIN or API key."
+                        )
+                    if response.status == 403:
+                        raise SyncAPIError("Access forbidden. PIN may have changed.")
+                    if response.status >= 400:
+                        text = await response.text()
+                        raise SyncAPIError(f"API error: {response.status} - {text}")
+                    text = await response.text()
+                    if text:
+                        return await response.json(content_type=None)
+                    return None
+            except aiohttp.ClientError as e:
+                raise SyncAPIError(f"Request failed: {e}") from e
 
-        try:
-            response = self._session.request(method, url, **kwargs)
-
-            if response.status_code == 401:
-                raise SyncAPIError("Authentication failed. Check PIN or API key.")
-            if response.status_code == 403:
-                raise SyncAPIError("Access forbidden. PIN may have changed.")
-            if response.status_code >= 400:
-                raise SyncAPIError(
-                    f"API error: {response.status_code} - {response.text}"
-                )
-
-            if response.text:
-                return response.json()
-            return None
-
-        except requests.RequestException as e:
-            raise SyncAPIError(f"Request failed: {e}") from e
-
-    def test_connection(self) -> bool:
+    async def test_connection(self) -> bool:
         """Test connectivity to the remote."""
         try:
-            # Use shorter timeout for connection tests to avoid slow UI when remote is offline
-            self._request("GET", "/pub/version", timeout=(2, 5))
+            await self._request("GET", "/pub/version", timeout=CONNECT_TIMEOUT)
             return True
         except SyncAPIError:
             return False
 
-    def get_integrations(self) -> list[dict[str, Any]]:
+    async def get_integrations(self) -> list[dict[str, Any]]:
         """Get list of installed integration instances."""
-        return self._request("GET", "/intg/instances?limit=100") or []
+        return await self._request("GET", "/intg/instances?limit=100") or []
 
-    def get_driver(self, driver_id: str) -> dict[str, Any] | None:
+    async def get_driver(self, driver_id: str) -> dict[str, Any] | None:
         """Get driver metadata by ID."""
         try:
-            return self._request("GET", f"/intg/drivers/{driver_id}")
+            return await self._request("GET", f"/intg/drivers/{driver_id}")
         except SyncAPIError as e:
             _LOG.warning("Failed to get driver %s: %s", driver_id, e)
             return None
 
-    def is_docked(self) -> bool:
-        """
-        Check if the remote is currently charging (docked or wireless).
-
-        For R3 remotes, this checks both dock charging (power_supply) and wireless charging.
-        The remote is considered "docked" if either charging method is active.
-
-        :return: True if the remote is on dock or wireless charging
-        """
+    async def is_docked(self) -> bool:
+        """Check if the remote is currently charging (docked or wireless)."""
         try:
-            status = self._request("GET", "/system/power/charger")
+            status = await self._request("GET", "/system/power/charger")
             if status and isinstance(status, dict):
-                # Check if either dock charging or wireless charging is active
-                power_supply = status.get("power_supply", False)
-                wireless_charging = status.get("wireless_charging", False)
-                return power_supply or wireless_charging
+                return status.get("power_supply", False) or status.get(
+                    "wireless_charging", False
+                )
             return False
         except SyncAPIError:
             return False
 
-    def get_system_update(self) -> dict[str, Any]:
-        """
-        Get system firmware update information.
+    async def get_system_update(self) -> dict[str, Any]:
+        """Get system firmware update information."""
+        return await self._request("GET", "/system/update") or {}
 
-        :return: Update info including installed_version and available updates
-        :raises SyncAPIError: If the request fails
-        """
-        return self._request("GET", "/system/update") or {}
+    async def check_system_update(self) -> dict[str, Any]:
+        """Trigger an immediate firmware update check on the remote."""
+        return await self._request("PUT", "/system/update") or {}
 
-    def check_system_update(self) -> dict[str, Any]:
-        """
-        Trigger an immediate firmware update check on the remote.
-
-        :return: Update info returned directly from the PUT response
-        :raises SyncAPIError: If the request fails
-        """
-        return self._request("PUT", "/system/update") or {}
-
-    def reboot_remote(self) -> bool:
-        """
-        Reboot the remote.
-
-        :return: True if successful
-        :raises SyncAPIError: If reboot command fails
-        """
+    async def reboot_remote(self) -> bool:
+        """Reboot the remote."""
         try:
-            self._request("POST", "/system?cmd=REBOOT")
+            await self._request("POST", "/system?cmd=REBOOT")
             _LOG.info("Remote reboot command sent")
             return True
         except SyncAPIError as e:
             _LOG.error("Failed to reboot remote: %s", e)
             raise
 
-    def power_off_remote(self) -> bool:
-        """
-        Power off the remote.
-
-        :return: True if successful
-        :raises SyncAPIError: If power off command fails
-        """
+    async def power_off_remote(self) -> bool:
+        """Power off the remote."""
         try:
-            self._request("POST", "/system?cmd=POWER_OFF")
+            await self._request("POST", "/system?cmd=POWER_OFF")
             _LOG.info("Remote power off command sent")
             return True
         except SyncAPIError as e:
             _LOG.error("Failed to power off remote: %s", e)
             raise
 
-    def get_drivers(self) -> list[dict[str, Any]]:
+    async def get_drivers(self) -> list[dict[str, Any]]:
         """Get list of all integration drivers."""
-        return self._request("GET", "/intg/drivers?limit=100") or []
+        return await self._request("GET", "/intg/drivers?limit=100") or []
 
-    def get_log_services(self) -> list[dict[str, Any]]:
-        """
-        Get all available log services from the remote.
+    async def get_log_services(self) -> list[dict[str, Any]]:
+        """Get all available log services from the remote."""
+        return await self._request("GET", "/system/logs/services") or []
 
-        Returns a list of service objects with 'service', 'active', and 'name' fields.
-        Custom integrations are prefixed with 'custom-intg-' (e.g., 'custom-intg-jvc_projector_driver').
-
-        :return: List of log service dictionaries
-        """
-        return self._request("GET", "/system/logs/services") or []
-
-    def get_logs(
+    async def get_logs(
         self,
         priority: int | None = None,
         service: str | None = None,
         limit: int = 1000,
         as_text: bool = False,
     ) -> list[dict[str, Any]] | str:
-        """
-        Get log entries from the remote.
-
-        :param priority: Minimum priority of log message (0-7, where 0 is highest)
-        :param service: Service ID to filter logs (e.g., 'custom-intg-jvc_projector_driver')
-        :param limit: Maximum number of log entries to retrieve (max 10,000, default 1000)
-        :param as_text: If True, return logs as text export; if False, return as JSON objects
-        :return: List of log dictionaries or text string depending on as_text parameter
-
-        Notes:
-        - Log entries are retrieved in reverse order (newest first)
-        - Maximum 10,000 entries
-        - Not all services use priority logging (many log everything at priority 6/info)
-        - Text format: tab-separated fields, message may contain tabs and line breaks
-        """
-        params = {}
+        """Get log entries from the remote."""
+        params: dict[str, Any] = {}
         if priority is not None:
             params["p"] = priority
         if service is not None:
             params["s"] = service
         if limit is not None:
-            params["limit"] = min(limit, 10000)  # Enforce max limit
+            params["limit"] = min(limit, 10000)
 
-        # Set content type header based on desired format
-        headers = {}
-        if as_text:
-            headers["Content-Type"] = "text/plain"
-        else:
-            headers["Content-Type"] = "application/json"
-
-        _LOG.debug(
-            "Fetching logs: priority=%s, service=%s, limit=%s, as_text=%s",
-            priority,
-            service,
-            limit,
-            as_text,
-        )
-
-        # For text format, we need to handle the response differently
-        if as_text:
-            url = f"{self._base_url}/system/logs"
+        url = f"{self._base_url}/system/logs"
+        async with self._make_session() as session:
             try:
-                response = self._session.get(
-                    url, params=params, headers=headers, timeout=REQUEST_TIMEOUT
-                )
-                if response.status_code == 401:
-                    raise SyncAPIError("Authentication failed")
-                if response.status_code == 403:
-                    raise SyncAPIError("Access forbidden")
-                if response.status_code >= 400:
-                    raise SyncAPIError(
-                        f"Request failed: {response.status_code} - {response.text}"
+                headers = {
+                    "Accept": "text/plain" if as_text else "application/json",
+                    "Content-Type": "text/plain" if as_text else "application/json",
+                }
+                async with session.get(url, params=params, headers=headers) as response:
+                    if response.status == 401:
+                        raise SyncAPIError("Authentication failed")
+                    if response.status == 403:
+                        raise SyncAPIError("Access forbidden")
+                    if response.status >= 400:
+                        text = await response.text()
+                        raise SyncAPIError(
+                            f"Request failed: {response.status} - {text}"
+                        )
+                    if as_text:
+                        return await response.text()
+                    text = await response.text()
+                    if not text:
+                        return []
+                    _LOG.debug(
+                        "get_logs raw response (first 200 chars): %s", text[:200]
                     )
-                return response.text
-            except requests.RequestException as e:
+                    # Try standard JSON array first, fall back to NDJSON
+                    try:
+                        data = json.loads(text)
+                        return data if isinstance(data, list) else []
+                    except json.JSONDecodeError:
+                        pass
+                    # Remote returned NDJSON (one JSON object per line)
+                    entries = []
+                    for line in text.splitlines():
+                        line = line.strip()
+                        if line:
+                            try:
+                                entries.append(json.loads(line))
+                            except json.JSONDecodeError:
+                                pass
+                    return entries
+            except aiohttp.ClientError as e:
                 raise SyncAPIError(f"Request failed: {e}") from e
-        else:
-            # JSON format uses standard request method
-            result = self._request(
-                "GET", "/system/logs", params=params, headers=headers
-            )
-            return result if isinstance(result, list) else []
 
-    def get_localization(self) -> dict[str, Any]:
-        """
-        Get the remote's localization settings including language preference.
-
-        :return: Localization settings with language_code, country_code, time_zone, etc.
-        :raises SyncAPIError: If the request fails
-        """
+    async def get_localization(self) -> dict[str, Any]:
+        """Get the remote's localization settings."""
         try:
-            result = self._request("GET", "/cfg/localization")
+            result = await self._request("GET", "/cfg/localization")
             _LOG.debug("Localization settings: %s", result)
             return result if isinstance(result, dict) else {}
         except SyncAPIError as e:
             _LOG.warning("Failed to get localization settings: %s", e)
             return {}
 
-    async def find_orphan_entities_async(self) -> list[dict[str, Any]]:
-        """
-        Find orphaned entities across all activities (async version).
-
-        :return: List of orphaned entity dictionaries with activity information
-        :raises SyncAPIError: If the request fails
-        """
+    async def find_orphan_entities(self) -> list[dict[str, Any]]:
+        """Find orphaned entities across all activities."""
         try:
             remote_url = f"http://{self._address}:{self._port}"
             result = await find_orphaned_entities(
@@ -322,264 +270,148 @@ class SyncRemoteClient:
             _LOG.error("Failed to get orphan entities: %s", e)
             raise SyncAPIError(f"Failed to get orphan entities: {e}") from e
 
-    def find_orphan_entities(self) -> list[dict[str, Any]]:
-        """
-        Find orphaned entities across all activities.
-
-        Note: This is a synchronous wrapper around the ucapi-framework's async
-        find_orphaned_entities helper function.
-
-        :return: List of orphaned entity dictionaries with activity information
-        :raises SyncAPIError: If the request fails
-        """
-        try:
-            # Check if an event loop is already running
-            try:
-                asyncio.get_running_loop()
-                # If we get here, a loop is running - we need to use a different approach
-
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(
-                        lambda: asyncio.run(self.find_orphan_entities_async())
-                    )
-                    return future.result()
-            except RuntimeError:
-                # No event loop running, safe to use asyncio.run()
-                return asyncio.run(self.find_orphan_entities_async())
-        except Exception as e:
-            _LOG.error("Failed to get orphan entities: %s", e)
-            raise SyncAPIError(f"Failed to get orphan entities: {e}") from e
-
-    def get_ir_remotes(self, page: int = 1, limit: int = 100) -> list[dict[str, Any]]:
-        """
-        Get list of IR remotes.
-
-        :param page: Page number for pagination
-        :param limit: Number of results per page
-        :return: List of IR remote dictionaries
-        :raises SyncAPIError: If the request fails
-        """
+    async def get_ir_remotes(
+        self, page: int = 1, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Get list of IR remotes."""
         try:
             params = {"kind": "IR", "page": page, "limit": limit}
-            result = self._request("GET", "/remotes", params=params)
-            _LOG.debug("Found %d IR remotes", len(result) if result else 0)
+            result = await self._request("GET", "/remotes", params=params)
             return result if isinstance(result, list) else []
         except Exception as e:
-            _LOG.error("Failed to get IR remotes: %s", e)
             raise SyncAPIError(f"Failed to get IR remotes: {e}") from e
 
-    def get_remote_detail(self, entity_id: str) -> dict[str, Any]:
-        """
-        Get detailed information for a specific remote.
-
-        :param entity_id: The remote entity ID
-        :return: Remote details dictionary
-        :raises SyncAPIError: If the request fails
-        """
+    async def get_remote_detail(self, entity_id: str) -> dict[str, Any]:
+        """Get detailed information for a specific remote."""
         try:
-            result = self._request("GET", f"/remotes/{entity_id}")
-            _LOG.debug("Retrieved details for remote: %s", entity_id)
+            result = await self._request("GET", f"/remotes/{entity_id}")
             return result if isinstance(result, dict) else {}
         except Exception as e:
-            _LOG.error("Failed to get remote detail for %s: %s", entity_id, e)
             raise SyncAPIError(f"Failed to get remote detail: {e}") from e
 
-    def get_custom_ir_codesets(self, page: int = 1, limit: int = 100) -> list[dict[str, Any]]:
-        """
-        Get list of custom IR codesets.
-
-        :param page: Page number for pagination
-        :param limit: Number of results per page
-        :return: List of custom IR codeset dictionaries
-        :raises SyncAPIError: If the request fails
-        """
+    async def get_custom_ir_codesets(
+        self, page: int = 1, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Get list of custom IR codesets."""
         try:
             params = {"page": page, "limit": limit}
-            result = self._request("GET", "/ir/codes/custom", params=params)
-            _LOG.debug("Found %d custom IR codesets", len(result) if result else 0)
+            result = await self._request("GET", "/ir/codes/custom", params=params)
             return result if isinstance(result, list) else []
         except Exception as e:
-            _LOG.error("Failed to get custom IR codesets: %s", e)
             raise SyncAPIError(f"Failed to get custom IR codesets: {e}") from e
 
-    def delete_custom_ir_codeset(self, device_id: str) -> bool:
-        """
-        Delete a custom IR codeset.
-
-        :param device_id: The custom IR codeset device ID
-        :return: True if successful
-        :raises SyncAPIError: If deletion fails
-        """
+    async def delete_custom_ir_codeset(self, device_id: str) -> bool:
+        """Delete a custom IR codeset."""
         try:
-            self._request("DELETE", f"/ir/codes/custom/{device_id}")
-            _LOG.info("Deleted custom IR codeset: %s", device_id)
+            await self._request("DELETE", f"/ir/codes/custom/{device_id}")
             return True
         except SyncAPIError as e:
             _LOG.error("Failed to delete custom IR codeset %s: %s", device_id, e)
             raise
 
-    def create_remote(self, remote_name: str, codeset_id: str) -> dict[str, Any]:
-        """
-        Create a new remote with a custom codeset.
-
-        :param remote_name: Name for the remote
-        :param codeset_id: Custom codeset device ID (e.g., "ir.manufacturer.123")
-        :return: Created remote data
-        :raises SyncAPIError: If creation fails
-        """
+    async def create_remote(self, remote_name: str, codeset_id: str) -> dict[str, Any]:
+        """Create a new remote with a custom codeset."""
         try:
-            payload = {
-                "name": {"en": remote_name},
-                "codeset_id": codeset_id,
-            }
-            result = self._request("POST", "/remotes", json=payload)
-            _LOG.info("Created remote: %s with codeset: %s", remote_name, codeset_id)
+            payload = {"name": {"en": remote_name}, "codeset_id": codeset_id}
+            result = await self._request("POST", "/remotes", json=payload)
             return result if isinstance(result, dict) else {}
         except Exception as e:
-            _LOG.error("Failed to create remote %s: %s", remote_name, e)
             raise SyncAPIError(f"Failed to create remote: {e}") from e
 
-    def delete_instance(self, instance_id: str) -> bool:
-        """
-        Delete an integration instance.
-
-        :param instance_id: The instance ID to delete
-        :return: True if successful
-        :raises SyncAPIError: If deletion fails
-        """
+    async def delete_instance(self, instance_id: str) -> bool:
+        """Delete an integration instance."""
         try:
-            self._request("DELETE", f"/intg/instances/{instance_id}")
-            _LOG.info("Deleted integration instance: %s", instance_id)
+            await self._request("DELETE", f"/intg/instances/{instance_id}")
             return True
         except SyncAPIError as e:
             _LOG.error("Failed to delete instance %s: %s", instance_id, e)
             raise
 
-    def delete_driver(self, driver_id: str) -> bool:
-        """
-        Delete an integration driver (and its instances).
-
-        According to docs, deleting the driver should also delete instances.
-
-        :param driver_id: The driver ID to delete
-        :return: True if successful
-        :raises SyncAPIError: If deletion fails
-        """
+    async def delete_driver(self, driver_id: str) -> bool:
+        """Delete an integration driver (and its instances)."""
         try:
-            self._request("DELETE", f"/intg/drivers/{driver_id}")
-            _LOG.info("Deleted integration driver: %s", driver_id)
+            await self._request("DELETE", f"/intg/drivers/{driver_id}")
             return True
         except SyncAPIError as e:
             _LOG.error("Failed to delete driver %s: %s", driver_id, e)
             raise
 
-    def install_integration(self, archive_data: bytes, filename: str) -> dict[str, Any]:
-        """
-        Install an integration from a tar.gz archive.
-
-        :param archive_data: The raw bytes of the tar.gz archive
-        :param filename: Original filename for the upload
-        :return: Installation response data
-        :raises SyncAPIError: If installation fails
-        """
+    async def install_integration(
+        self, archive_data: bytes, filename: str
+    ) -> dict[str, Any]:
+        """Install an integration from a tar.gz archive."""
         url = f"{self._base_url}/intg/install"
-
-        try:
-            # Use application/x-gzip to match official UC software
-            files = {"file": (filename, archive_data, "application/x-gzip")}
-            response = self._session.post(url, files=files, timeout=(30, 120))
-
-            if response.status_code == 401:
-                raise SyncAPIError("Authentication failed. Check PIN or API key.")
-            if response.status_code == 403:
-                raise SyncAPIError("Access forbidden. PIN may have changed.")
-            if response.status_code >= 400:
-                raise SyncAPIError(
-                    f"Install failed: {response.status_code} - {response.text}"
+        install_timeout = aiohttp.ClientTimeout(connect=30, total=150)
+        async with self._make_session(install_timeout) as session:
+            try:
+                form = aiohttp.FormData()
+                form.add_field(
+                    "file",
+                    archive_data,
+                    filename=filename,
+                    content_type="application/x-gzip",
                 )
+                async with session.post(url, data=form) as response:
+                    if response.status == 401:
+                        raise SyncAPIError(
+                            "Authentication failed. Check PIN or API key."
+                        )
+                    if response.status == 403:
+                        raise SyncAPIError("Access forbidden. PIN may have changed.")
+                    if response.status >= 400:
+                        text = await response.text()
+                        raise SyncAPIError(
+                            f"Install failed: {response.status} - {text}"
+                        )
+                    text = await response.text()
+                    if text:
+                        return await response.json(content_type=None)
+                    return {"status": "ok"}
+            except aiohttp.ClientError as e:
+                raise SyncAPIError(f"Install request failed: {e}") from e
 
-            _LOG.info("Successfully installed integration from %s", filename)
-            if response.text:
-                return response.json()
-            return {"status": "ok"}
+    async def start_setup(
+        self, driver_id: str, reconfigure: bool = True
+    ) -> dict[str, Any]:
+        """Start the integration setup flow."""
+        payload = {"driver_id": driver_id, "reconfigure": reconfigure, "setup_data": {}}
+        return await self._request("POST", "/intg/setup", json=payload)
 
-        except requests.RequestException as e:
-            raise SyncAPIError(f"Install request failed: {e}") from e
+    async def get_setup(self, driver_id: str) -> dict[str, Any]:
+        """Get the current setup page for an integration."""
+        return await self._request("GET", f"/intg/setup/{driver_id}")
 
-    def start_setup(self, driver_id: str, reconfigure: bool = True) -> dict[str, Any]:
-        """
-        Start the integration setup flow.
-
-        POST /intg/setup with driver_id and reconfigure=true to begin configuration.
-
-        :param driver_id: The driver ID to configure
-        :param reconfigure: Whether this is a reconfiguration (default True)
-        :return: Confirmation response with driver_id, reconfigure, and state
-        :raises SyncAPIError: If setup fails
-        """
-        payload = {
-            "driver_id": driver_id,
-            "reconfigure": reconfigure,
-            "setup_data": {},
-        }
-        return self._request("POST", "/intg/setup", json=payload)
-
-    def get_setup(self, driver_id: str) -> dict[str, Any]:
-        """
-        Get the current setup page for an integration.
-
-        GET /intg/setup/{driver_id} to retrieve the setup form/choices.
-
-        :param driver_id: The driver ID being configured
-        :return: Setup response with require_user_action fields
-        :raises SyncAPIError: If request fails
-        """
-        return self._request("GET", f"/intg/setup/{driver_id}")
-
-    def send_setup_input(
+    async def send_setup_input(
         self, driver_id: str, input_values: dict[str, Any]
     ) -> dict[str, Any]:
-        """
-        Send input values during the setup flow.
+        """Send input values during the setup flow."""
+        return await self._request(
+            "PUT", f"/intg/setup/{driver_id}", json={"input_values": input_values}
+        )
 
-        PUT /intg/setup/{driver_id} with input_values.
-
-        :param driver_id: The driver ID being configured
-        :param input_values: Dictionary of field IDs to values
-        :return: Next setup step response
-        :raises SyncAPIError: If request fails
-        """
-        payload = {"input_values": input_values}
-        return self._request("PUT", f"/intg/setup/{driver_id}", json=payload)
-
-    def complete_setup(self, driver_id: str) -> bool:
-        """
-        Complete and clean up an integration setup flow.
-
-        DELETE /intg/setup/{driver_id} to finish the setup process.
-
-        :param driver_id: The driver ID to complete setup for
-        :return: True if successful
-        """
+    async def complete_setup(self, driver_id: str) -> bool:
+        """Complete and clean up an integration setup flow."""
         try:
-            self._request("DELETE", f"/intg/setup/{driver_id}")
+            await self._request("DELETE", f"/intg/setup/{driver_id}")
             return True
         except SyncAPIError as e:
             _LOG.warning("Failed to complete setup for %s: %s", driver_id, e)
             return False
 
-    def get_enabled_integrations(self) -> list[dict[str, Any]]:
+    async def get_enabled_integrations(self) -> list[dict[str, Any]]:
         """Get enabled integrations (for post-install verification)."""
         try:
-            return self._request("GET", "/intg?enabled=true&limit=50&page=1") or []
+            return (
+                await self._request("GET", "/intg?enabled=true&limit=50&page=1") or []
+            )
         except SyncAPIError:
             return []
 
-    def get_instantiable_drivers(self) -> list[dict[str, Any]]:
+    async def get_instantiable_drivers(self) -> list[dict[str, Any]]:
         """Get instantiable and enabled drivers (for post-install verification)."""
         try:
             return (
-                self._request(
+                await self._request(
                     "GET",
                     "/intg/drivers?instantiable=true&enabled=true&limit=50&page=1",
                 )
@@ -588,11 +420,11 @@ class SyncRemoteClient:
         except SyncAPIError:
             return []
 
-    def get_custom_drivers_without_instances(self) -> list[dict[str, Any]]:
+    async def get_custom_drivers_without_instances(self) -> list[dict[str, Any]]:
         """Get custom drivers without instances (for post-install verification)."""
         try:
             return (
-                self._request(
+                await self._request(
                     "GET",
                     "/intg/drivers?driver_type=CUSTOM&has_instances=false&enabled=true&limit=50&page=1",
                 )
@@ -601,201 +433,128 @@ class SyncRemoteClient:
         except SyncAPIError:
             return []
 
-    def get_enabled_instances(self) -> list[dict[str, Any]]:
+    async def get_enabled_instances(self) -> list[dict[str, Any]]:
         """Get enabled integration instances (for post-restore verification)."""
         try:
             return (
-                self._request("GET", "/intg/instances?enabled=true&limit=50&page=1")
-                or []
-            )
-        except SyncAPIError:
-            return []
-
-    def get_instance(self, instance_id: str) -> dict[str, Any]:
-        """Get a single integration instance by ID."""
-        return self._request("GET", f"/intg/instances/{instance_id}")
-
-    def get_instance_entities(
-        self, instance_id: str, filter_type: str = "NEW"
-    ) -> list[dict[str, Any]]:
-        """
-        Get entities for an integration instance.
-
-        :param instance_id: The integration instance ID
-        :param filter_type: Entity filter type (NEW, CONFIGURED, etc.)
-        :return: List of entity dictionaries
-        """
-        try:
-            return (
-                self._request(
-                    "GET",
-                    f"/intg/instances/{instance_id}/entities?reload=true&filter={filter_type}&limit=100&page=1",
+                await self._request(
+                    "GET", "/intg/instances?enabled=true&limit=50&page=1"
                 )
                 or []
             )
         except SyncAPIError:
             return []
 
-    def get_configured_entities(self, instance_id: str) -> list[dict[str, Any]]:
-        """
-        Get configured entities for an integration instance.
+    async def get_instance(self, instance_id: str) -> dict[str, Any]:
+        """Get a single integration instance by ID."""
+        return await self._request("GET", f"/intg/instances/{instance_id}")
 
-        :param instance_id: The integration instance ID
-        :return: List of configured entity dictionaries
-        """
-        return self.get_instance_entities(instance_id, filter_type="CONFIGURED")
+    async def get_instance_entities(
+        self, instance_id: str, filter_type: str = "NEW", reload: bool = True
+    ) -> list[dict[str, Any]]:
+        """Get entities for an integration instance."""
+        try:
+            reload_param = "true" if reload else "false"
+            return (
+                await self._request(
+                    "GET",
+                    f"/intg/instances/{instance_id}/entities?reload={reload_param}&filter={filter_type}&limit=100&page=1",
+                )
+                or []
+            )
+        except SyncAPIError:
+            return []
 
-    def register_entities(
+    async def get_configured_entities(self, instance_id: str) -> list[dict[str, Any]]:
+        """Get configured (registered) entities for an integration instance.
+
+        Uses reload=false so the Remote returns its own stored configured-entity
+        list rather than re-fetching from the driver (which would clear it).
+        """
+        return await self.get_instance_entities(
+            instance_id, filter_type="CONFIGURED", reload=False
+        )
+
+    async def register_entities(
         self, integration_id: str, entity_ids: list[str] | None = None
     ) -> dict[str, Any]:
-        """
-        Register entities for an integration.
-
-        If entity_ids is None, registers all available entities.
-        If entity_ids is provided, registers only the specified entities.
-
-        :param integration_id: The integration instance ID
-        :param entity_ids: Optional list of entity IDs to register (e.g., ["entity1", "entity2"])
-        :return: Response dictionary from the API
-        :raises SyncAPIError: If the request fails
-        """
+        """Register entities for an integration."""
         endpoint = f"/intg/instances/{integration_id}/entities"
-
-        _LOG.debug("List of Entities to register: %s", entity_ids)
-
         if entity_ids:
-            _LOG.debug(
-                "Registering %d specific entities for integration: %s",
-                len(entity_ids),
-                integration_id,
-            )
-            return self._request("POST", endpoint, json=entity_ids)
+            return await self._request("POST", endpoint, json=entity_ids)
+        return await self._request("POST", endpoint)
 
-        _LOG.debug("Registering all entities for integration: %s", integration_id)
-        return self._request("POST", endpoint)
-
-    def register_entity(self, integration_id: str, entity_id: str) -> dict[str, Any]:
-        """
-        Register a specific entity for an integration.
-
-        :param integration_id: The integration instance ID
-        :param entity_id: The entity ID to register
-        :return: Response dictionary from the API
-        :raises SyncAPIError: If the request fails
-        """
-        _LOG.info(
-            "Registering entity %s for integration: %s", entity_id, integration_id
-        )
-        return self._request(
+    async def register_entity(
+        self, integration_id: str, entity_id: str
+    ) -> dict[str, Any]:
+        """Register a specific entity for an integration."""
+        return await self._request(
             "POST", f"/intg/instances/{integration_id}/entities/{entity_id}"
         )
 
-    def delete_all_entities(self, integration_id: str) -> dict[str, Any]:
-        """
-        Delete all entities for an integration.
-
-        :param integration_id: The integration instance ID
-        :return: Response dictionary from the API
-        :raises SyncAPIError: If the request fails
-        """
-        _LOG.info("Deleting all entities for integration: %s", integration_id)
-        return self._request(
+    async def delete_all_entities(self, integration_id: str) -> dict[str, Any]:
+        """Delete all entities for an integration."""
+        return await self._request(
             "DELETE", "/entities", json={"integration_id": integration_id}
         )
 
-    def delete_entity(self, integration_id: str, entity_id: str) -> dict[str, Any]:
-        """
-        Delete a specific entity for an integration.
-
-        :param integration_id: The integration instance ID (e.g., "psn_driver.main")
-        :param entity_id: The partial entity ID without integration prefix (e.g., "media_player.device1")
-        :return: Response dictionary from the API
-        :raises SyncAPIError: If the request fails
-        """
-        # Build full entity_id: integration_id + "." + entity_id
+    async def delete_entity(
+        self, integration_id: str, entity_id: str
+    ) -> dict[str, Any]:
+        """Delete a specific entity for an integration."""
         full_entity_id = f"{integration_id}.{entity_id}"
-        _LOG.info(
-            "Deleting entity %s for integration: %s", full_entity_id, integration_id
-        )
-        return self._request("DELETE", f"/entities/{full_entity_id}")
+        return await self._request("DELETE", f"/entities/{full_entity_id}")
 
 
-def find_orphaned_ir_codesets(api_client: SyncRemoteClient) -> list[dict[str, Any]]:
+# Backward-compat alias
+SyncRemoteClient = RemoteClient
+
+
+async def find_orphaned_ir_codesets(api_client: RemoteClient) -> list[dict[str, Any]]:
     """
     Find custom IR codesets that are not associated with any remote.
 
-    Only returns items from /ir/codes/custom that do not have a corresponding
-    ir.codeset.id found in any remote from /remotes.
-
-    :param api_client: SyncRemoteClient instance for API calls
+    :param api_client: RemoteClient instance for API calls
     :return: List of orphaned codesets with device_id and device_name
     """
     try:
-        # Get all IR remotes and extract associated codeset IDs
-        associated_codeset_ids = set()
+        associated_codeset_ids: set[str] = set()
         page = 1
         while True:
-            remotes = api_client.get_ir_remotes(page=page, limit=100)
+            remotes = await api_client.get_ir_remotes(page=page, limit=100)
             if not remotes:
                 break
-
             for remote in remotes:
                 entity_id = remote.get("entity_id")
                 if entity_id:
-                    # Get remote detail to find ir.codeset.id
-                    detail = api_client.get_remote_detail(entity_id)
+                    detail = await api_client.get_remote_detail(entity_id)
                     ir = detail.get("options", {}).get("ir", {})
                     ir_codeset = ir.get("codeset")
-
-                    # Check if ir.codeset exists and has an id
                     if ir_codeset and isinstance(ir_codeset, dict):
                         codeset_id = ir_codeset.get("id")
                         if codeset_id:
                             associated_codeset_ids.add(codeset_id)
-                            _LOG.debug(
-                                "Remote %s has associated codeset: %s",
-                                entity_id,
-                                codeset_id,
-                            )
-
-            # If we got less than limit, we're done
             if len(remotes) < 100:
                 break
             page += 1
 
-        _LOG.debug("Found %d associated IR codeset IDs", len(associated_codeset_ids))
-
-        # Get all custom IR codesets with pagination
-        all_codesets = []
+        all_codesets: list[dict[str, Any]] = []
         page = 1
         while True:
-            codesets = api_client.get_custom_ir_codesets(page=page, limit=100)
+            codesets = await api_client.get_custom_ir_codesets(page=page, limit=100)
             if not codesets:
                 break
             all_codesets.extend(codesets)
-            # If we got less than limit, we're done
             if len(codesets) < 100:
                 break
             page += 1
-        
-        _LOG.debug("Found %d total custom IR codesets", len(all_codesets))
 
-        # Find orphans - codesets not associated with any remote
         orphaned = []
         for codeset in all_codesets:
             device_id = codeset.get("device_id")
             device_name = codeset.get("device", device_id)
-
             if device_id and device_id not in associated_codeset_ids:
-                _LOG.debug(
-                    "Orphaned codeset found: %s (ID: %s)", device_name, device_id
-                )
-                orphaned.append(
-                    {
-                        "device_id": device_id,
-                        "device_name": device_name,
-                    }
-                )
+                orphaned.append({"device_id": device_id, "device_name": device_name})
 
         _LOG.info("Found %d orphaned IR codesets", len(orphaned))
         return orphaned
@@ -805,22 +564,23 @@ def find_orphaned_ir_codesets(api_client: SyncRemoteClient) -> list[dict[str, An
         return []
 
 
-class SyncGitHubClient:
+class GitHubClient:
     """
-    Synchronous client for the GitHub API.
-
-    For use in Flask routes.
+    Async client for the GitHub API. Uses aiohttp.
     """
 
     def __init__(self) -> None:
-        """Initialize the GitHub client."""
-        self._session = requests.Session()
-        self._session.verify = certifi.where()  # Use certifi's certificate bundle
-        self._session.headers.update(
-            {
-                "Accept": "application/vnd.github.v3+json",
-                "User-Agent": "uc-intg-manager",
-            }
+        self._default_headers = {
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": "uc-intg-manager",
+        }
+
+    def _make_session(
+        self, timeout: aiohttp.ClientTimeout | None = None
+    ) -> aiohttp.ClientSession:
+        return aiohttp.ClientSession(
+            headers=self._default_headers,
+            timeout=timeout or REQUEST_TIMEOUT,
         )
 
     @staticmethod
@@ -836,141 +596,105 @@ class SyncGitHubClient:
                 return match.group(1), match.group(2).rstrip("/")
         return None
 
-    def get_latest_release(self, owner: str, repo: str) -> dict[str, Any] | None:
+    def _check_rate_limit(
+        self, headers: Any, owner: str, repo: str, context: str = ""
+    ) -> bool:
+        """Log rate limit warning. Returns True if rate limited."""
+        remaining = headers.get("X-RateLimit-Remaining")
+        if remaining == "0":
+            reset = headers.get("X-RateLimit-Reset")
+            reset_str = "unknown"
+            countdown = 0
+            if reset:
+                try:
+                    reset_time = datetime.fromtimestamp(int(reset))
+                    reset_str = reset_time.strftime("%Y-%m-%d %H:%M:%S")
+                    countdown = int(reset) - int(datetime.now().timestamp())
+                except (ValueError, OSError):
+                    pass
+            _LOG.warning(
+                "GitHub API rate limit exceeded for %s/%s%s. Reset at: %s (in %d seconds)",
+                owner,
+                repo,
+                f" {context}" if context else "",
+                reset_str,
+                countdown,
+            )
+            return True
+        return False
+
+    async def get_latest_release(self, owner: str, repo: str) -> dict[str, Any] | None:
         """Get the latest release for a repository."""
         url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}/releases/latest"
-
-        try:
-            response = self._session.get(url, timeout=REQUEST_TIMEOUT)
-
-            # Check for rate limiting
-            rate_limit_remaining = response.headers.get("X-RateLimit-Remaining")
-            if response.status_code == 403 and rate_limit_remaining == "0":
-                rate_limit_reset = response.headers.get("X-RateLimit-Reset")
-                # Convert Unix timestamp to readable time
-
-                reset_time = (
-                    datetime.fromtimestamp(int(rate_limit_reset))
-                    if rate_limit_reset
-                    else None
-                )
-                reset_str = (
-                    reset_time.strftime("%Y-%m-%d %H:%M:%S")
-                    if reset_time
-                    else "unknown"
-                )
-                _LOG.warning(
-                    "GitHub API rate limit exceeded for %s/%s. Reset at: %s (in %d seconds)",
-                    owner,
-                    repo,
-                    reset_str,
-                    int(rate_limit_reset) - int(datetime.now().timestamp())
-                    if rate_limit_reset
-                    else 0,
-                )
+        async with self._make_session() as session:
+            try:
+                async with session.get(url) as response:
+                    if response.status == 403 and self._check_rate_limit(
+                        response.headers, owner, repo
+                    ):
+                        return None
+                    if response.status == 200:
+                        return await response.json()
+                    if response.status == 404:
+                        return await self._get_latest_tag(owner, repo)
+                    return None
+            except aiohttp.ClientError as e:
+                _LOG.warning("Failed to get release for %s/%s: %s", owner, repo, e)
                 return None
 
-            if response.status_code == 200:
-                return response.json()
-            if response.status_code == 404:
-                # Try tags if no releases
-                return self._get_latest_tag(owner, repo)
-            return None
-        except requests.RequestException as e:
-            _LOG.warning("Failed to get release for %s/%s: %s", owner, repo, e)
-            return None
-
-    def get_releases(
+    async def get_releases(
         self, owner: str, repo: str, limit: int = 10
     ) -> list[dict[str, Any]]:
-        """
-        Get multiple releases for a repository.
-
-        :param owner: Repository owner
-        :param repo: Repository name
-        :param limit: Maximum number of releases to return (default 10)
-        :return: List of release data dictionaries
-        """
+        """Get multiple releases for a repository."""
         url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}/releases"
-        params = {"per_page": limit}
-
-        try:
-            response = self._session.get(url, params=params, timeout=REQUEST_TIMEOUT)
-
-            # Check for rate limiting
-            rate_limit_remaining = response.headers.get("X-RateLimit-Remaining")
-            if response.status_code == 403 and rate_limit_remaining == "0":
-                _LOG.warning(
-                    "GitHub API rate limit exceeded for %s/%s releases", owner, repo
-                )
+        async with self._make_session() as session:
+            try:
+                async with session.get(url, params={"per_page": limit}) as response:
+                    if response.status == 403 and self._check_rate_limit(
+                        response.headers, owner, repo, "releases"
+                    ):
+                        return []
+                    if response.status == 200:
+                        return await response.json()
+                    return []
+            except aiohttp.ClientError as e:
+                _LOG.warning("Failed to get releases for %s/%s: %s", owner, repo, e)
                 return []
 
-            if response.status_code == 200:
-                return response.json()
-            if response.status_code == 404:
-                _LOG.debug("No releases found for %s/%s", owner, repo)
-                return []
-            return []
-        except requests.RequestException as e:
-            _LOG.warning("Failed to get releases for %s/%s: %s", owner, repo, e)
-            return []
-
-    def get_release_by_tag(
+    async def get_release_by_tag(
         self, owner: str, repo: str, tag: str
     ) -> dict[str, Any] | None:
-        """
-        Get a specific release by tag name.
-
-        :param owner: Repository owner
-        :param repo: Repository name
-        :param tag: Release tag (e.g., 'v1.0.0' or '1.0.0')
-        :return: Release data or None if not found
-        """
-        # GitHub API expects the tag as-is (with or without 'v' prefix)
+        """Get a specific release by tag name."""
         url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}/releases/tags/{tag}"
-
-        try:
-            response = self._session.get(url, timeout=REQUEST_TIMEOUT)
-
-            if response.status_code == 200:
-                return response.json()
-            if response.status_code == 404:
-                _LOG.debug("Release not found for %s/%s tag %s", owner, repo, tag)
+        async with self._make_session() as session:
+            try:
+                async with session.get(url) as response:
+                    if response.status == 200:
+                        return await response.json()
+                    return None
+            except aiohttp.ClientError as e:
+                _LOG.warning(
+                    "Failed to get release for %s/%s tag %s: %s", owner, repo, tag, e
+                )
                 return None
-            return None
-        except requests.RequestException as e:
-            _LOG.warning(
-                "Failed to get release for %s/%s tag %s: %s", owner, repo, tag, e
-            )
-            return None
 
-    def download_release_asset(
+    async def download_release_asset(
         self,
         owner: str,
         repo: str,
         asset_pattern: str | None = None,
         version: str | None = None,
     ) -> tuple[bytes, str] | None:
-        """
-        Download a release asset (tar.gz file) from a release.
-
-        :param owner: GitHub repository owner
-        :param repo: GitHub repository name
-        :param asset_pattern: Regex pattern to match asset filename. If None, matches first .tar.gz file.
-                              Use for integrations with multiple tar.gz files (e.g., 'aarch64.*\.tar\.gz')
-        :param version: Specific version tag to download (e.g., 'v1.0.0'). If None, downloads latest.
-        :return: Tuple of (file bytes, filename) or None if not found
-        """
-        # Get the appropriate release
+        """Download a release asset (tar.gz file) from a release."""
         if version:
-            release = self.get_release_by_tag(owner, repo, version)
+            release = await self.get_release_by_tag(owner, repo, version)
             if not release:
                 _LOG.warning(
                     "No release found for %s/%s version %s", owner, repo, version
                 )
                 return None
         else:
-            release = self.get_latest_release(owner, repo)
+            release = await self.get_latest_release(owner, repo)
             if not release:
                 _LOG.warning("No release found for %s/%s", owner, repo)
                 return None
@@ -980,153 +704,132 @@ class SyncGitHubClient:
             _LOG.warning("No assets in release for %s/%s", owner, repo)
             return None
 
-        # Find the matching asset
         target_asset = None
-
         if asset_pattern:
-            # Use regex pattern matching
             try:
                 pattern = re.compile(asset_pattern)
                 for asset in assets:
-                    name = asset.get("name", "")
-                    if pattern.search(name):
+                    if pattern.search(asset.get("name", "")):
                         target_asset = asset
-                        _LOG.debug(
-                            "Matched asset '%s' using pattern '%s' for %s/%s",
-                            name,
-                            asset_pattern,
-                            owner,
-                            repo,
-                        )
                         break
             except re.error as e:
-                _LOG.error(
-                    "Invalid regex pattern '%s' for %s/%s: %s",
-                    asset_pattern,
-                    owner,
-                    repo,
-                    e,
-                )
+                _LOG.error("Invalid regex pattern '%s': %s", asset_pattern, e)
                 return None
         else:
-            # Default: find first .tar.gz file
             for asset in assets:
-                name = asset.get("name", "")
-                if ".tar.gz" in name:
+                if ".tar.gz" in asset.get("name", ""):
                     target_asset = asset
                     break
 
         if not target_asset:
-            _LOG.warning(
-                "No %s asset found in release for %s/%s", asset_pattern, owner, repo
-            )
+            _LOG.warning("No matching asset found in release for %s/%s", owner, repo)
             return None
 
         download_url = target_asset.get("browser_download_url")
         if not download_url:
-            _LOG.warning("No download URL for asset in %s/%s", owner, repo)
             return None
 
-        try:
-            _LOG.info("Downloading %s from %s/%s", target_asset["name"], owner, repo)
-            response = self._session.get(
-                download_url,
-                timeout=(30, 300),  # 30s connect, 5min read for large files
-                headers={"Accept": "application/octet-stream"},
-            )
-            if response.status_code == 200:
-                return response.content, target_asset["name"]
-            _LOG.error(
-                "Failed to download asset: %s - %s",
-                response.status_code,
-                response.text[:200],
-            )
-            return None
-        except requests.RequestException as e:
-            _LOG.error("Failed to download release asset: %s", e)
-            return None
+        _LOG.info("Downloading %s from %s/%s", target_asset["name"], owner, repo)
+        async with self._make_session(DOWNLOAD_TIMEOUT) as session:
+            try:
+                async with session.get(
+                    download_url, headers={"Accept": "application/octet-stream"}
+                ) as response:
+                    if response.status == 200:
+                        return await response.read(), target_asset["name"]
+                    _LOG.error("Failed to download asset: %s", response.status)
+                    return None
+            except aiohttp.ClientError as e:
+                _LOG.error("Failed to download release asset: %s", e)
+                return None
 
-    def _get_latest_tag(self, owner: str, repo: str) -> dict[str, Any] | None:
+    async def _get_latest_tag(self, owner: str, repo: str) -> dict[str, Any] | None:
         """Get the latest tag if no releases exist."""
         url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}/tags"
+        async with self._make_session() as session:
+            try:
+                async with session.get(url) as response:
+                    if response.status == 403 and self._check_rate_limit(
+                        response.headers, owner, repo, "tags"
+                    ):
+                        return None
+                    if response.status == 200:
+                        tags = await response.json()
+                        if tags:
+                            return {"tag_name": tags[0].get("name", "")}
+                return None
+            except aiohttp.ClientError:
+                return None
 
-        try:
-            response = self._session.get(url, timeout=REQUEST_TIMEOUT)
-
-            # Check for rate limiting
-            if response.status_code == 403:
-                rate_limit_remaining = response.headers.get("X-RateLimit-Remaining")
-                rate_limit_reset = response.headers.get("X-RateLimit-Reset")
-                if rate_limit_remaining == "0":
-                    # Convert Unix timestamp to readable time
-
-                    reset_time = (
-                        datetime.fromtimestamp(int(rate_limit_reset))
-                        if rate_limit_reset
-                        else None
-                    )
-                    reset_str = (
-                        reset_time.strftime("%Y-%m-%d %H:%M:%S")
-                        if reset_time
-                        else "unknown"
-                    )
-                    _LOG.warning(
-                        "GitHub API rate limit exceeded for %s/%s tags. Reset at: %s (in %d seconds)",
-                        owner,
-                        repo,
-                        reset_str,
-                        int(rate_limit_reset) - int(datetime.now().timestamp())
-                        if rate_limit_reset
-                        else 0,
-                    )
-                    return None
-
-            if response.status_code == 200:
-                tags = response.json()
-                if tags:
-                    return {"tag_name": tags[0].get("name", "")}
-            return None
-        except requests.RequestException:
-            return None
-
-    def get_repository_info(self, owner: str, repo: str) -> dict[str, Any] | None:
-        """
-        Get repository information including stars, forks, and dates.
-
-        :param owner: Repository owner
-        :param repo: Repository name
-        :return: Repository data or None if not found
-        """
+    async def get_repository_info(self, owner: str, repo: str) -> dict[str, Any] | None:
+        """Get repository information including stars, forks, and dates."""
         url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}"
-
-        try:
-            response = self._session.get(url, timeout=REQUEST_TIMEOUT)
-
-            # Check for rate limiting
-            rate_limit_remaining = response.headers.get("X-RateLimit-Remaining")
-            if response.status_code == 403 and rate_limit_remaining == "0":
-                rate_limit_reset = response.headers.get("X-RateLimit-Reset")
-                reset_time = (
-                    datetime.fromtimestamp(int(rate_limit_reset))
-                    if rate_limit_reset
-                    else None
-                )
-                reset_str = (
-                    reset_time.strftime("%Y-%m-%d %H:%M:%S")
-                    if reset_time
-                    else "unknown"
-                )
+        async with self._make_session() as session:
+            try:
+                async with session.get(url) as response:
+                    if response.status == 403 and self._check_rate_limit(
+                        response.headers, owner, repo
+                    ):
+                        return None
+                    if response.status == 200:
+                        data = await response.json()
+                        return {
+                            "stargazers_count": data.get("stargazers_count", 0),
+                            "forks_count": data.get("forks_count", 0),
+                            "watchers_count": data.get("watchers_count", 0),
+                            "created_at": data.get("created_at", ""),
+                            "updated_at": data.get("updated_at", ""),
+                            "pushed_at": data.get("pushed_at", ""),
+                            "open_issues_count": data.get("open_issues_count", 0),
+                        }
+                    return None
+            except aiohttp.ClientError as e:
                 _LOG.warning(
-                    "GitHub API rate limit exceeded for %s/%s. Reset at: %s",
-                    owner,
-                    repo,
-                    reset_str,
+                    "Failed to get repository info for %s/%s: %s", owner, repo, e
                 )
                 return None
 
+    @staticmethod
+    def compare_versions(current: str, latest: str) -> bool:
+        """Check if latest version is newer than current."""
+        try:
+            current_clean = re.sub(r"^[vV]", "", current).split("-")[0].split("+")[0]
+            latest_clean = re.sub(r"^[vV]", "", latest).split("-")[0].split("+")[0]
+            return Version(latest_clean) > Version(current_clean)
+        except (InvalidVersion, TypeError, AttributeError):
+            return False
+
+
+class _SyncGitHubClient:
+    """
+    Synchronous (requests-based) GitHub client.
+
+    Used only by fetch_repository_batch() which runs in a background thread
+    and cannot use async/await.
+    """
+
+    def __init__(self) -> None:
+        self._session = requests.Session()
+        self._session.verify = certifi.where()
+        self._session.headers.update(
+            {
+                "Accept": "application/vnd.github.v3+json",
+                "User-Agent": "uc-intg-manager",
+            }
+        )
+
+    @staticmethod
+    def parse_github_url(home_page: str) -> tuple[str, str] | None:
+        """Parse a GitHub URL to extract owner and repo."""
+        return GitHubClient.parse_github_url(home_page)
+
+    def get_repository_info(self, owner: str, repo: str) -> dict[str, Any] | None:
+        """Get repository info synchronously."""
+        url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}"
+        try:
+            response = self._session.get(url, timeout=_SYNC_REQUEST_TIMEOUT)
             if response.status_code == 200:
                 data = response.json()
-                # Extract only the fields we need
                 return {
                     "stargazers_count": data.get("stargazers_count", 0),
                     "forks_count": data.get("forks_count", 0),
@@ -1141,47 +844,19 @@ class SyncGitHubClient:
             _LOG.warning("Failed to get repository info for %s/%s: %s", owner, repo, e)
             return None
 
-    @staticmethod
-    def compare_versions(current: str, latest: str) -> bool:
-        """Check if latest version is newer than current."""
-        try:
-            # Strip 'v' prefix if present and compare using packaging
-            current_clean = re.sub(r"^[vV]", "", current).split("-")[0].split("+")[0]
-            latest_clean = re.sub(r"^[vV]", "", latest).split("-")[0].split("+")[0]
-            return Version(latest_clean) > Version(current_clean)
-        except (InvalidVersion, TypeError, AttributeError):
-            return False
+
+# Backward-compat alias (SyncGitHubClient kept as async GitHubClient)
+SyncGitHubClient = GitHubClient
 
 
 def load_repo_cache() -> dict[str, Any]:
-    """
-    Load repository cache from manager.json.
-
-    Cache structure (stored in manager.json under "repo_cache" key):
-    {
-        "last_batch_time": timestamp,
-        "repos": {
-            "owner/repo": {
-                "cached_at": timestamp,
-                "data": {...repo_info...}
-            }
-        }
-    }
-
-    :return: Cache dictionary with last_batch_time and repos
-    """
-
+    """Load repository cache from manager.json."""
     if not os.path.exists(MANAGER_DATA_FILE):
         return {"last_batch_time": 0, "repos": {}}
-
     try:
         with open(MANAGER_DATA_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-
-            # v2.0 format - repo_cache is in shared section
             cache = data.get("shared", {}).get("repo_cache", {})
-
-            # Ensure proper structure
             if "repos" not in cache:
                 return {
                     "last_batch_time": 0,
@@ -1194,16 +869,9 @@ def load_repo_cache() -> dict[str, Any]:
 
 
 def save_repo_cache(cache: dict[str, Any]) -> None:
-    """
-    Save repository cache to manager.json.
-
-    :param cache: Cache dictionary with last_batch_time and repos
-    """
-
+    """Save repository cache to manager.json."""
     try:
         os.makedirs(os.path.dirname(MANAGER_DATA_FILE), exist_ok=True)
-
-        # Load existing data to preserve other sections
         existing_data: dict[str, Any] = {}
         if os.path.exists(MANAGER_DATA_FILE):
             try:
@@ -1211,8 +879,6 @@ def save_repo_cache(cache: dict[str, Any]) -> None:
                     existing_data = json.load(f)
             except (json.JSONDecodeError, OSError):
                 pass
-
-        # Ensure v2.0 structure (should already be migrated at startup)
         if existing_data.get("version") != "2.0":
             _LOG.error(
                 "manager.json is not v2.0 format - migration should have run at startup"
@@ -1222,10 +888,7 @@ def save_repo_cache(cache: dict[str, Any]) -> None:
                 existing_data["remotes"] = {}
             if "shared" not in existing_data:
                 existing_data["shared"] = {}
-
-        # Save to shared.repo_cache
         existing_data["shared"]["repo_cache"] = cache
-
         with open(MANAGER_DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(existing_data, f, indent=2)
     except OSError as e:
@@ -1233,50 +896,33 @@ def save_repo_cache(cache: dict[str, Any]) -> None:
 
 
 def get_cached_repo_info(
-    owner: str, repo: str, github_client: "SyncGitHubClient"
+    owner: str, repo: str, github_client: "GitHubClient | _SyncGitHubClient"
 ) -> dict[str, Any]:
     """
-    Get repository info from cache or add to fetch queue.
+    Get repository info from cache (returns cached data without fetching).
 
-    This function implements rate-limiting by only fetching REPO_FETCH_BATCH_SIZE
-    repositories per REPO_FETCH_BATCH_INTERVAL. If a repo needs updating but
-    we've hit the batch limit, it returns the expired cache (or empty dict).
-
-    :param owner: Repository owner
-    :param repo: Repository name
-    :param github_client: GitHub client instance
-    :return: Repository info dict (stars, dates, etc.) or empty dict if unavailable
+    Background batching in web_server.py populates this via fetch_repository_batch.
     """
     cache = load_repo_cache()
     repos = cache.get("repos", {})
     cache_key = f"{owner}/{repo}"
     now = datetime.now().timestamp()
 
-    # Check if we have valid cached data
     if cache_key in repos:
         cached_entry = repos[cache_key]
         cached_time = cached_entry.get("cached_at", 0)
         if now - cached_time < REPO_CACHE_VALIDITY:
-            _LOG.debug("Using cached repo info for %s", cache_key)
             return cached_entry.get("data", {})
-
-    # No valid cache - return expired cache if available, or empty dict
-    # Background batching in web_server.py will populate this over time
-    if cache_key in repos:
-        _LOG.debug("Using expired cache for %s (will refresh in background)", cache_key)
-        return repos[cache_key].get("data", {})
+        # Return expired cache while background refresh happens
         return repos[cache_key].get("data", {})
 
-    _LOG.debug("No cache for %s, waiting for next batch window", cache_key)
     return {}
 
 
 def load_registry() -> list[dict[str, Any]]:
     """Load the integrations registry from URL or local file."""
     try:
-        # Check if it's a local file path
         if os.path.exists(KNOWN_INTEGRATIONS_URL):
-            _LOG.debug("Loading registry from local file: %s", KNOWN_INTEGRATIONS_URL)
             with open(KNOWN_INTEGRATIONS_URL, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, dict) and "integrations" in data:
@@ -1284,12 +930,9 @@ def load_registry() -> list[dict[str, Any]]:
                 if isinstance(data, list):
                     return data
                 return []
-
-        # Otherwise treat it as a URL
-        _LOG.debug("Loading registry from URL: %s", KNOWN_INTEGRATIONS_URL)
         response = requests.get(
             KNOWN_INTEGRATIONS_URL,
-            timeout=REQUEST_TIMEOUT,
+            timeout=_SYNC_REQUEST_TIMEOUT,
             verify=certifi.where(),
         )
         if response.status_code == 200:
@@ -1307,35 +950,23 @@ def load_registry() -> list[dict[str, Any]]:
 def migrate_to_multi_remote(default_remote_id: str, default_remote_name: str) -> bool:
     """
     Migrate manager.json from v1.0 (single remote) to v2.0 (multi-remote) format.
-
-    Creates a backup of the existing file before migration.
-
-    :param default_remote_id: Identifier for the default remote (existing data will be assigned to this)
-    :param default_remote_name: Display name for the default remote
-    :return: True if migration successful, False otherwise
     """
     if not os.path.exists(MANAGER_DATA_FILE):
         _LOG.info("No existing manager.json found - will create v2.0 format")
         return True
 
     try:
-        # Load existing data
         with open(MANAGER_DATA_FILE, "r", encoding="utf-8") as f:
             old_data = json.load(f)
 
-        # Check if already migrated
         if old_data.get("version") == "2.0":
             _LOG.info("manager.json already migrated to v2.0")
             return True
 
         _LOG.info("Migrating manager.json from v1.0 to v2.0 format")
-
-        # Create backup
         backup_path = f"{MANAGER_DATA_FILE}.v1.backup"
         shutil.copy2(MANAGER_DATA_FILE, backup_path)
-        _LOG.info("Created backup at %s", backup_path)
 
-        # Extract data from old format
         old_settings = old_data.get("settings", {})
         old_integrations = old_data.get("integrations", {})
         old_notification_settings = old_data.get("notification_settings", {})
@@ -1343,33 +974,25 @@ def migrate_to_multi_remote(default_remote_id: str, default_remote_name: str) ->
         old_read_message_ids = old_data.get("read_message_ids", [])
         old_repo_cache = old_data.get("repo_cache", {})
 
-        # Extract UI preferences from old settings
         ui_preferences = {
             "sort_by": old_settings.get("sort_by", "stars"),
             "sort_reverse": old_settings.get("sort_reverse", False),
         }
-
-        # Extract registry tracking from old notification settings
         registry_tracking = {
             "last_count": old_notification_settings.get("_last_registry_count", 0),
             "known_ids": old_notification_settings.get("_known_integration_ids", []),
         }
-
-        # Remove UI preferences from settings (now in shared)
         new_settings = {
             k: v
             for k, v in old_settings.items()
             if k not in ["sort_by", "sort_reverse"]
         }
-
-        # Remove registry tracking from notification settings (now in shared)
         new_notification_settings = {
             k: v
             for k, v in old_notification_settings.items()
             if k not in ["_last_registry_count", "_known_integration_ids"]
         }
 
-        # Build new v2.0 structure
         new_data = {
             "version": "2.0",
             "remotes": {
@@ -1389,7 +1012,6 @@ def migrate_to_multi_remote(default_remote_id: str, default_remote_name: str) ->
             },
         }
 
-        # Save migrated data
         with open(MANAGER_DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(new_data, f, indent=2)
 
@@ -1398,12 +1020,10 @@ def migrate_to_multi_remote(default_remote_id: str, default_remote_name: str) ->
 
     except Exception as e:
         _LOG.error("Failed to migrate manager.json: %s", e, exc_info=True)
-        # Attempt to restore backup if it exists
         backup_path = f"{MANAGER_DATA_FILE}.v1.backup"
         if os.path.exists(backup_path):
             try:
                 shutil.copy2(backup_path, MANAGER_DATA_FILE)
-                _LOG.info("Restored backup after failed migration")
             except Exception as restore_error:
                 _LOG.error("Failed to restore backup: %s", restore_error)
         return False

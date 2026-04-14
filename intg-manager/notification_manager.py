@@ -214,7 +214,9 @@ class NotificationManager:
 
         _LOG.info("Sending notification: title='%s', message='%s'", title, message)
         try:
-            await self._service.send_all(settings, title, message, data=self._remote_data())
+            await self._service.send_all(
+                settings, title, message, data=self._remote_data()
+            )
             self._notified_updates.add(notification_key)
             self._save_notification_state()  # Persist to disk
             _LOG.info("Sent update notification for %s", integration_name)
@@ -293,7 +295,9 @@ class NotificationManager:
             "Sending error notification: title='%s', message='%s'", title, message
         )
         try:
-            await self._service.send_all(settings, title, message, data=self._remote_data(), priority=1)
+            await self._service.send_all(
+                settings, title, message, data=self._remote_data(), priority=1
+            )
             self._notified_errors[driver_id] = state
             self._save_notification_state()  # Persist to disk
             _LOG.info("Sent error state notification for %s", integration_name)
@@ -365,7 +369,9 @@ class NotificationManager:
             message,
         )
         try:
-            await self._service.send_all(settings, title, message, data=self._remote_data(), priority=1)
+            await self._service.send_all(
+                settings, title, message, data=self._remote_data(), priority=1
+            )
             # Update tracked activities
             self._notified_orphaned_activities.update(new_activity_ids)
             self._save_notification_state()
@@ -418,14 +424,25 @@ class NotificationManager:
                 notification_title,
                 message,
                 data=self._remote_data(
-                    {"installed_version": installed_version, "available_version": available_version}
+                    {
+                        "installed_version": installed_version,
+                        "available_version": available_version,
+                    }
                 ),
             )
             self._notified_firmware_versions.add(available_version)
             self._save_notification_state()
-            _LOG.info("[%s] Sent firmware update notification for %s", self._remote_id, available_version)
+            _LOG.info(
+                "[%s] Sent firmware update notification for %s",
+                self._remote_id,
+                available_version,
+            )
         except Exception as e:
-            _LOG.error("[%s] Failed to send firmware update notification: %s", self._remote_id, e)
+            _LOG.error(
+                "[%s] Failed to send firmware update notification: %s",
+                self._remote_id,
+                e,
+            )
 
     def clear_orphaned_activities(self, activity_ids: list[str]) -> None:
         """
@@ -553,7 +570,9 @@ class NotificationManager:
 _notification_managers: dict[str, NotificationManager] = {}
 
 
-def get_notification_manager(remote_id: str | None = None, remote_name: str = "") -> NotificationManager:
+def get_notification_manager(
+    remote_id: str | None = None, remote_name: str = ""
+) -> NotificationManager:
     """Get the notification manager instance for a remote.
 
     :param remote_id: Remote identifier. If None, returns manager for first available remote.
