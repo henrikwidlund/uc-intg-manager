@@ -451,7 +451,21 @@
                 <i class="fa-brands fa-github h-4 w-4"></i>
             </a>
             {% endif %}
+
+            {% if integration.state != 'NOT_CONFIGURED' and integration.supports_backup %}
+            <button 
+                class="backup-btn inline-flex items-center px-3 py-1.5 bg-gray-100 dark:bg-uc-darker hover:bg-gray-200 dark:hover:bg-uc-card text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white text-sm font-medium rounded-lg transition-colors"
+                hx-post="/api/backup/{{ integration.driver_id }}"
+                hx-swap="none"
+                hx-indicator="#backup-overlay-{{ integration.driver_id }}"
+                hx-on::after-request="if(event.detail.successful) { this.classList.add('text-green-400'); setTimeout(() => this.classList.remove('text-green-400'), 2000); }"
+                title="Backup configuration">
+                <i class="fa-solid fa-download h-4 w-4 mr-1"></i>
+                Backup
+            </button>
+            {% else %}
             <span class="text-xs text-blue-700 dark:text-blue-400 italic">Managed via Docker</span>
+            {% endif %}
             {% else %}
             <!-- Official integration - show info only -->
             <!-- Delete button -->
