@@ -433,6 +433,27 @@ class RemoteClient:
         except SyncAPIError:
             return []
 
+    async def get_custom_active_drivers_count(self) -> int:
+        """Return the number of active custom integration drivers.
+
+        Uses the same query the Remote uses to enforce its 10-integration limit:
+        ``driver_type=CUSTOM&enabled=true&has_instances=true``.
+
+        :return: Count of active custom drivers, or -1 on error.
+        """
+        try:
+            drivers = (
+                await self._request(
+                    "GET",
+                    "/intg/drivers?driver_type=CUSTOM&enabled=true&has_instances=true&page=1&limit=100",
+                )
+                or []
+            )
+            return len(drivers)
+        except SyncAPIError as e:
+            _LOG.warning("Failed to fetch custom driver count: %s", e)
+            return -1
+
     async def get_enabled_instances(self) -> list[dict[str, Any]]:
         """Get enabled integration instances (for post-restore verification)."""
         try:

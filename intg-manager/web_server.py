@@ -32,6 +32,7 @@ from backup_service import (
 )
 from const import (
     API_DELAY,
+    DATA_DIR,
     MANAGER_DATA_FILE,
     REPO_CACHE_VALIDITY,
     REPO_FETCH_BATCH_INTERVAL,
@@ -1012,7 +1013,8 @@ async def _get_available_integrations(
         # Use registry IDs (not actual_driver_ids) for tracking to avoid false positives
         # when installing integrations (actual_driver_id can differ from registry id)
         integration_data = [
-            (item.get("id", ""), item.get("name", "")) for item in registry
+            (item.get("id", ""), item.get("name", ""))
+            for item in registry
         ]
         new_integrations = nm.update_registry_count(integration_data)
         if new_integrations:
@@ -1093,6 +1095,13 @@ async def integrations_page():
 async def available_page():
     """Render the available integrations page."""
     return await render_template("available.html")
+
+
+@app.route("/updating")
+async def updating_page():
+    """Render the self-update waiting page."""
+    target_version = request.args.get("version", "")
+    return await render_template("updating.html", target_version=target_version)
 
 
 # =============================================================================
@@ -3611,6 +3620,11 @@ async def get_version_selector(owner: str, repo: str, driver_id: str):
 
     Fetches recent releases and filters by migration boundary from registry.
     Shows beta releases if enabled in settings.
+
+    Pass ?self_update=true to use the self-update flow (Integration Manager
+    updating itself via the bootstrapper). In that mode the install URL is
+    /api/self-update and the version filter uses min_compatible_version instead
+    of migration_required_at.
     """
     if not _github_client:
         return await render_template(
@@ -3618,13 +3632,19 @@ async def get_version_selector(owner: str, repo: str, driver_id: str):
             error="GitHub client not available",
         )
 
+    is_self_update = request.args.get("self_update", "").lower() in ("true", "1", "yes")
+
     try:
         # Load settings to check show_beta_releases
         settings = Settings.load(remote_id=get_active_remote_id())
         show_beta_releases = settings.show_beta_releases
 
-        # Load registry to get migration_required_at
+        # Load registry to get version floor values:
+        #   migration_required_at   – normal updates: versions <= this are excluded
+        #   min_compatible_version  – self-update picker: versions < this are excluded
+        #                             (separate from backup_min_version which gates can_auto_update)
         migration_required_at = None
+        min_compatible_version = None
         is_update = False
         instance_id = None
 
@@ -3633,9 +3653,16 @@ async def get_version_selector(owner: str, repo: str, driver_id: str):
             for entry in registry:
                 if entry.get("id") == driver_id or entry.get("driver_id") == driver_id:
                     migration_required_at = entry.get("migration_required_at")
+                    min_compatible_version = entry.get("min_compatible_version")
                     break
         except Exception as e:
             _LOG.warning("Failed to load registry for migration check: %s", e)
+
+        # Version floor: for self-update use min_compatible_version (< filter),
+        # for normal updates use migration_required_at (<= filter).
+        version_floor = (
+            min_compatible_version if is_self_update else migration_required_at
+        )
 
         # Check if this is an update (driver installed) or fresh install
         integrations = await _get_installed_integrations(get_active_remote_id())
@@ -3674,14 +3701,21 @@ async def get_version_selector(owner: str, repo: str, driver_id: str):
             # Parse version for comparison
             clean_version = tag_name.lstrip("v")
 
-            # Check migration boundary
-            if migration_required_at:
+            # Check version floor
+            if version_floor:
                 try:
-                    if Version(clean_version) <= Version(migration_required_at):
+                    v = Version(clean_version)
+                    floor = Version(version_floor)
+                    # self-update: strict lower bound (< floor is excluded)
+                    # normal update: migration boundary (<= floor is excluded)
+                    if (is_self_update and v < floor) or (
+                        not is_self_update and v <= floor
+                    ):
                         _LOG.debug(
-                            "Filtering out %s (≤ %s migration boundary)",
+                            "Filtering out %s (floor=%s, self_update=%s)",
                             tag_name,
-                            migration_required_at,
+                            version_floor,
+                            is_self_update,
                         )
                         continue
                 except InvalidVersion:
@@ -3722,15 +3756,14 @@ async def get_version_selector(owner: str, repo: str, driver_id: str):
                 break
 
         # Combine lists: beta releases first, then stable releases
-        # This ensures: beta, beta, latest, previous (good)
-        # Not: beta, latest, beta (bad)
-        filtered_releases = beta_releases + stable_releases
-
-        # Limit to 4 total
-        filtered_releases = filtered_releases[:4]
+        filtered_releases = (beta_releases + stable_releases)[:4]
 
         # Determine the install/update URL
-        if is_update and instance_id:
+        if is_self_update:
+            install_url = "/api/self-update"
+            hx_target = "body"
+            hx_indicator = ""
+        elif is_update and instance_id:
             install_url = f"/api/integration/{instance_id}/update"
             hx_target = f"#card-{driver_id}"
             hx_indicator = f"#upgrade-overlay-{driver_id}"
@@ -3748,11 +3781,12 @@ async def get_version_selector(owner: str, repo: str, driver_id: str):
         return await render_template(
             "partials/modal_version_selector.html",
             releases=filtered_releases,
-            migration_required_at=migration_required_at,
+            migration_required_at=version_floor,
             install_url=install_url,
             hx_target=hx_target,
             hx_indicator=hx_indicator,
             driver_id=driver_id,
+            is_self_update=is_self_update,
         )
 
     except Exception as e:
@@ -3761,6 +3795,502 @@ async def get_version_selector(owner: str, repo: str, driver_id: str):
             "partials/modal_version_selector.html",
             error=f"Error loading versions: {str(e)}",
         )
+
+
+@app.route("/api/self-update", methods=["POST"])
+async def self_update():
+    """
+    Trigger a self-update of Integration Manager via the bootstrapper integration.
+
+    When the remote deletes the IM driver it also wipes the entire UC_CONFIG_HOME
+    directory for that integration — taking manager.json (integration backups,
+    notification settings, UI preferences) and config.json (remote connection
+    credentials) with it.  Both files must therefore be serialised and handed to
+    the bootstrapper *before* deletion so it can restore them after the new
+    version is installed.
+
+    Process:
+    1. Validate and normalise the target version tag
+    2. Locate the bootstrapper entry in the registry (type: "bootstrapper")
+    3. Read manager.json → manager_data  (integration configs, settings)
+       Read config.json  → config_data   (remote connection credentials)
+    4. Download the latest bootstrapper tar.gz from its GitHub release
+    5. Remove any stale bootstrapper installation, then install the fresh copy
+    6. Run the bootstrapper setup flow:
+       a. start_setup()          - initiates setup on the remote
+       b. poll get_setup()       - wait for WAIT_USER_ACTION state
+       c. send_setup_input() with:
+            target_version    - the IM release tag to install (e.g. "v2.1.0")
+            manager_driver_id - our driver_id so bootstrapper knows what to replace
+            manager_data      - serialised manager.json (restored after reinstall)
+            config_data       - serialised config.json  (restored after reinstall)
+          The framework returns SetupComplete after query_device validates the input,
+          saves the config, and schedules the upgrade via verify_connection().
+          No explicit complete_setup() call is needed — the setup state machine
+          is already done by the time send_setup_input returns.
+    7. Release the operation lock (IM is about to be replaced)
+    8. Return HX-Redirect to /updating?version=X so the browser switches to the
+       waiting page, which polls /health every 2 s and auto-redirects to / once
+       the new IM instance is back up.
+    """
+    if not _get_active_remote_client() or not _github_client:
+        return jsonify({"status": "error", "message": "Service not initialized"}), 500
+
+    form = await request.form
+    version = request.args.get("version") or form.get("version")
+    if not version:
+        return jsonify(
+            {"status": "error", "message": "version parameter is required"}
+        ), 400
+
+    # Normalise to tag format (bootstrapper will strip the v itself if needed)
+    if not version.startswith("v"):
+        version = f"v{version}"
+
+    # Check that there is a free integration slot for the bootstrapper.
+    # The Remote enforces a limit of 10 active custom integrations; the upgrade
+    # temporarily installs the bootstrapper as an extra custom driver, so we
+    # need at least one open slot (current count must be < 10).
+    _INTEGRATION_SLOT_LIMIT = 10
+    active_count = await _get_active_remote_client().get_custom_active_drivers_count()
+    if active_count >= _INTEGRATION_SLOT_LIMIT:
+        _LOG.warning(
+            "Self-update aborted: %d/%d integration slots in use — no room for bootstrapper",
+            active_count,
+            _INTEGRATION_SLOT_LIMIT,
+        )
+        return jsonify(
+            {
+                "status": "error",
+                "message": (
+                    f"Cannot upgrade: all {_INTEGRATION_SLOT_LIMIT} integration slots are in use. "
+                    "Please remove a custom integration before updating Integration Manager."
+                ),
+            }
+        ), 409
+
+    # Check operation lock
+    global _operation_in_progress
+    async with _operation_lock:
+        if _operation_in_progress:
+            return jsonify(
+                {"status": "error", "message": "Another install/upgrade is in progress"}
+            ), 409
+        _operation_in_progress = True
+        _LOG.info("Lock acquired for self-update to %s", version)
+
+    try:
+        # --- Step 1: Find the self_managed (IM) registry entry ---
+        # The bootstrapper is now bundled as a release asset in the same repo as IM.
+        registry = load_registry()
+        manager_entry = next(
+            (item for item in registry if item.get("self_managed", False)),
+            None,
+        )
+        if not manager_entry:
+            async with _operation_lock:
+                _operation_in_progress = False
+            return jsonify(
+                {"status": "error", "message": "Self-managed IM entry not found in registry"}
+            ), 404
+
+        manager_repo_url = manager_entry.get("repository", "")
+        if not manager_repo_url or "github.com" not in manager_repo_url:
+            async with _operation_lock:
+                _operation_in_progress = False
+            return jsonify(
+                {
+                    "status": "error",
+                    "message": "No GitHub repository found for Integration Manager",
+                }
+            ), 400
+
+        parsed = GitHubClient.parse_github_url(manager_repo_url)
+        if not parsed:
+            async with _operation_lock:
+                _operation_in_progress = False
+            return jsonify(
+                {
+                    "status": "error",
+                    "message": "Could not parse Integration Manager GitHub URL",
+                }
+            ), 400
+
+        im_owner, im_repo = parsed
+        # Read our own driver_id from driver.json (the live value, not the registry)
+        # so it works correctly with dev IDs like intg_manager_driver_dev.
+        try:
+            _driver_json_path = os.path.join(os.path.dirname(__file__), "..", "driver.json")
+            with open(_driver_json_path, "r", encoding="utf-8") as _f:
+                manager_driver_id = json.load(_f).get("driver_id", "intg_manager_driver")
+        except Exception:
+            manager_driver_id = manager_entry.get("driver_id", "intg_manager_driver")
+        _LOG.info("Self-update: using manager_driver_id=%s", manager_driver_id)
+        bootstrapper_driver_id = manager_entry.get(
+            "bootstrapper_driver_id", "intg_bootstrapper_driver"
+        )
+        asset_pattern = manager_entry.get(
+            "bootstrapper_asset_pattern", r"uc-intg-bootstrapper.*\.tar\.gz"
+        )
+
+        # --- Step 2: Serialise data files for bootstrapper handoff ---
+        # Deleting the IM driver on the remote wipes its entire UC_CONFIG_HOME, so
+        # both files must be captured now and passed to the bootstrapper which will
+        # write them back after the new version is installed.
+
+        # manager.json – integration backups, notification settings, UI preferences
+        manager_data_str = "{}"
+        try:
+            if os.path.exists(MANAGER_DATA_FILE):
+                with open(MANAGER_DATA_FILE, "r", encoding="utf-8") as f:
+                    manager_data_str = f.read()
+                _LOG.info(
+                    "Read manager.json (%d bytes) for bootstrapper handoff",
+                    len(manager_data_str),
+                )
+        except OSError as e:
+            _LOG.warning("Could not read manager.json for bootstrapper: %s", e)
+
+        # config.json – remote connection credentials (IP, auth tokens, etc.)
+        config_file = os.path.join(DATA_DIR, "config.json")
+        config_data_str = "[]"
+        try:
+            if os.path.exists(config_file):
+                with open(config_file, "r", encoding="utf-8") as f:
+                    config_data_str = f.read()
+                _LOG.info(
+                    "Read config.json (%d bytes) for bootstrapper handoff",
+                    len(config_data_str),
+                )
+        except OSError as e:
+            _LOG.warning("Could not read config.json for bootstrapper: %s", e)
+
+        # --- Step 3: Download bootstrapper ---
+        # Dev override: UC_DEV_BOOTSTRAPPER_URL skips GitHub and fetches from a local URL.
+        dev_bootstrapper_url = os.getenv("UC_DEV_BOOTSTRAPPER_URL", "")
+        if dev_bootstrapper_url:
+            _LOG.warning(
+                "UC_DEV_BOOTSTRAPPER_URL set — downloading bootstrapper from %s",
+                dev_bootstrapper_url,
+            )
+            try:
+                async with aiohttp.ClientSession() as _dev_session:
+                    async with _dev_session.get(
+                        dev_bootstrapper_url,
+                        timeout=aiohttp.ClientTimeout(connect=10, total=120),
+                    ) as _dev_resp:
+                        if _dev_resp.status != 200:
+                            raise SyncAPIError(
+                                f"Dev bootstrapper download failed: HTTP {_dev_resp.status}"
+                            )
+                        archive_data = await _dev_resp.read()
+                filename = dev_bootstrapper_url.rstrip("/").split("/")[-1] or "bootstrapper.tar.gz"
+                _LOG.info(
+                    "Dev-downloaded bootstrapper %s (%d bytes)", filename, len(archive_data)
+                )
+            except aiohttp.ClientError as exc:
+                async with _operation_lock:
+                    _operation_in_progress = False
+                return jsonify(
+                    {"status": "error", "message": f"Dev bootstrapper download error: {exc}"}
+                ), 500
+        else:
+            # The bootstrapper is bundled as an asset in the same GitHub release as IM.
+            _LOG.info(
+                "Downloading bootstrapper from %s/%s @ %s", im_owner, im_repo, version
+            )
+            download_result = await _github_client.download_release_asset(
+                im_owner, im_repo, asset_pattern=asset_pattern, version=version
+            )
+            if not download_result:
+                async with _operation_lock:
+                    _operation_in_progress = False
+                return jsonify(
+                    {
+                        "status": "error",
+                        "message": f"No bootstrapper asset found in release {version} at {im_owner}/{im_repo}",
+                    }
+                ), 404
+            archive_data, filename = download_result
+
+        _LOG.info("Downloaded bootstrapper %s (%d bytes)", filename, len(archive_data))
+
+        # --- Step 4: Install bootstrapper ---
+        # Delete any stale bootstrapper first (ignore errors)
+        try:
+            await _get_active_remote_client().delete_driver(bootstrapper_driver_id)
+            await asyncio.sleep(API_DELAY)
+        except SyncAPIError:
+            pass  # Not installed yet — fine
+
+        await _get_active_remote_client().install_integration(archive_data, filename)
+        _LOG.info("Bootstrapper installed")
+        await asyncio.sleep(API_DELAY * 3)
+
+        # --- Step 5: Run bootstrapper setup flow ---
+        # Start setup (new install, reconfigure=False)
+        await _get_active_remote_client().start_setup(
+            bootstrapper_driver_id, reconfigure=False
+        )
+        _LOG.info("Bootstrapper setup started")
+        await asyncio.sleep(API_DELAY * 3)
+
+        # Step 5a: Wait for first WAIT_USER_ACTION (restore_from_backup screen)
+        # BaseSetupFlow always injects this screen first.
+        setup_state = ""
+        for _ in range(6):
+            setup_response = await _get_active_remote_client().get_setup(
+                bootstrapper_driver_id
+            )
+            setup_state = setup_response.get("state", "")
+            if setup_state == "WAIT_USER_ACTION":
+                break
+            await asyncio.sleep(API_DELAY * 3)
+
+        if setup_state != "WAIT_USER_ACTION":
+            raise SyncAPIError(
+                f"Bootstrapper did not reach WAIT_USER_ACTION (state: {setup_state!r})"
+            )
+
+        # Step 5b: Answer restore_from_backup = true
+        _LOG.info("Bootstrapper setup: answering restore_from_backup=true")
+        await _get_active_remote_client().send_setup_input(
+            bootstrapper_driver_id, {"restore_from_backup": "true"}
+        )
+        await asyncio.sleep(API_DELAY * 3)
+
+        # Step 5c: Wait for second WAIT_USER_ACTION (manual entry form)
+        setup_state = ""
+        for _ in range(6):
+            setup_response = await _get_active_remote_client().get_setup(
+                bootstrapper_driver_id
+            )
+            setup_state = setup_response.get("state", "")
+            if setup_state == "WAIT_USER_ACTION":
+                break
+            await asyncio.sleep(API_DELAY * 3)
+
+        if setup_state != "WAIT_USER_ACTION":
+            raise SyncAPIError(
+                f"Bootstrapper did not reach second WAIT_USER_ACTION (state: {setup_state!r})"
+            )
+
+        # Step 5d: Send the actual payload packed into restore_data
+        # The framework's _handle_restore_response reads only restore_data;
+        # we pack all four fields as a JSON object inside it so the bootstrapper
+        # can unpack them in its _handle_restore_response override.
+        restore_payload = json.dumps({
+            "target_version": version,
+            "manager_driver_id": manager_driver_id,
+            "manager_data": manager_data_str,
+            "config_data": config_data_str,
+        })
+        _LOG.info(
+            "Sending bootstrapper setup payload: target_version=%s, manager_driver_id=%s",
+            version,
+            manager_driver_id,
+        )
+        await _get_active_remote_client().send_setup_input(
+            bootstrapper_driver_id, {"restore_data": restore_payload}
+        )
+        await asyncio.sleep(API_DELAY * 2)
+        _LOG.info(
+            "Bootstrapper setup input sent — self-update underway for %s", version
+        )
+
+        # Release lock — IM is about to be replaced, no point holding it
+        async with _operation_lock:
+            _operation_in_progress = False
+
+        # Redirect the browser to the waiting page
+        clean_version = version.lstrip("v")
+        response = await render_template("updating.html", target_version=version)
+        return Response(
+            response,
+            headers={"HX-Redirect": f"/updating?version={clean_version}"},
+        )
+
+    except SyncAPIError as e:
+        _LOG.error("Self-update failed (SyncAPIError): %s", e)
+        async with _operation_lock:
+            _operation_in_progress = False
+        return jsonify({"status": "error", "message": str(e)}), 500
+    except Exception as e:
+        _LOG.error("Self-update failed: %s", e)
+        async with _operation_lock:
+            _operation_in_progress = False
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route("/api/dev/test-bootstrapper-setup", methods=["POST"])
+async def dev_test_bootstrapper_setup():
+    """
+    DEV-ONLY: Drive the bootstrapper setup flow without going through the full
+    self_update() path (no registry lookup, no GitHub download, no bootstrapper
+    reinstall).
+
+    Requires the env var ``UC_DEV_MODE=true`` — returns 404 otherwise so it
+    cannot be hit in production.
+
+    Assumptions:
+    - The bootstrapper is already installed on the remote and ready to receive
+      setup (start_setup has NOT been called yet, or the previous setup was
+      aborted).
+    - manager.json and config.json are present on disk at their normal paths.
+
+    Query / form parameters (all optional — sensible defaults are derived):
+        bootstrapper_driver_id  default: "intg_bootstrapper_driver"
+        manager_driver_id       default: read from MANAGER_DATA_FILE or falls
+                                         back to the first self_managed registry entry
+        target_version          default: "v0.0.0-dev" (bootstrapper ignores the
+                                         actual value during a restore-only test)
+        skip_upgrade            default: "true"  — when "true" the bootstrapper's
+                                         _run_upgrade is short-circuited by passing
+                                         a sentinel target_version so it exits after
+                                         the restore step (see device.py TODO below)
+
+    Returns JSON progress log so you can watch each step.
+    """
+    if os.getenv("UC_DEV_MODE", "").lower() not in ("true", "1", "yes"):
+        return jsonify({"status": "error", "message": "Not found"}), 404
+
+    if not _get_active_remote_client():
+        return jsonify({"status": "error", "message": "Service not initialized"}), 500
+
+    form = await request.form
+    args = request.args
+
+    def _param(name: str, default: str = "") -> str:
+        return (args.get(name) or form.get(name) or default).strip()
+
+    bootstrapper_driver_id = _param(
+        "bootstrapper_driver_id", "intg_bootstrapper_driver"
+    )
+    target_version = _param("target_version", "v0.0.0-dev")
+
+    # Derive manager_driver_id: prefer explicit param, then read from registry
+    manager_driver_id = _param("manager_driver_id")
+    if not manager_driver_id:
+        try:
+            registry = load_registry()
+            entry = next((r for r in registry if r.get("self_managed")), None)
+            if entry:
+                manager_driver_id = entry.get("actual_driver_id") or entry.get("id", "")
+        except Exception:  # pylint: disable=broad-except
+            pass
+    if not manager_driver_id:
+        return jsonify(
+            {
+                "status": "error",
+                "message": "Could not determine manager_driver_id — pass it explicitly",
+            }
+        ), 400
+
+    steps: list[str] = []
+
+    def log_step(msg: str) -> None:
+        _LOG.info("[DEV test-bootstrapper-setup] %s", msg)
+        steps.append(msg)
+
+    try:
+        log_step(
+            f"Parameters: bootstrapper={bootstrapper_driver_id!r}  manager={manager_driver_id!r}  version={target_version!r}"
+        )
+
+        # --- Read config files from disk (same as self_update does) ---
+        manager_data_str = "{}"
+        try:
+            if os.path.exists(MANAGER_DATA_FILE):
+                with open(MANAGER_DATA_FILE, "r", encoding="utf-8") as f:
+                    manager_data_str = f.read()
+            log_step(f"Read manager.json ({len(manager_data_str)} bytes)")
+        except OSError as e:
+            log_step(f"WARNING: could not read manager.json: {e}")
+
+        config_data_str = "[]"
+        config_json_path = os.path.join(DATA_DIR, "config.json")
+        try:
+            if os.path.exists(config_json_path):
+                with open(config_json_path, "r", encoding="utf-8") as f:
+                    config_data_str = f.read()
+            log_step(f"Read config.json ({len(config_data_str)} bytes)")
+        except OSError as e:
+            log_step(f"WARNING: could not read config.json: {e}")
+
+        # --- Step 1: start_setup ---
+        log_step(f"Calling start_setup({bootstrapper_driver_id!r}) …")
+        await _get_active_remote_client().start_setup(bootstrapper_driver_id, reconfigure=False)
+        await asyncio.sleep(API_DELAY * 3)
+
+        # --- Step 2: poll for first WAIT_USER_ACTION (restore_from_backup screen) ---
+        setup_state = ""
+        for attempt in range(5):
+            resp = await _get_active_remote_client().get_setup(bootstrapper_driver_id)
+            setup_state = resp.get("state", "")
+            log_step(f"  attempt {attempt + 1}: state={setup_state!r}")
+            if setup_state == "WAIT_USER_ACTION":
+                break
+            await asyncio.sleep(API_DELAY * 3)
+
+        if setup_state != "WAIT_USER_ACTION":
+            return jsonify(
+                {
+                    "status": "error",
+                    "message": f"Bootstrapper did not reach WAIT_USER_ACTION (last state: {setup_state!r})",
+                    "steps": steps,
+                }
+            ), 500
+
+        # --- Step 3: answer restore_from_backup = true ---
+        log_step("Answering restore_from_backup=true …")
+        await _get_active_remote_client().send_setup_input(
+            bootstrapper_driver_id, {"restore_from_backup": "true"}
+        )
+        await asyncio.sleep(API_DELAY * 3)
+
+        # --- Step 4: poll for second WAIT_USER_ACTION (manual entry form) ---
+        setup_state = ""
+        for attempt in range(5):
+            resp = await _get_active_remote_client().get_setup(bootstrapper_driver_id)
+            setup_state = resp.get("state", "")
+            log_step(f"  attempt {attempt + 1} (post-restore toggle): state={setup_state!r}")
+            if setup_state == "WAIT_USER_ACTION":
+                break
+            await asyncio.sleep(API_DELAY * 3)
+
+        if setup_state != "WAIT_USER_ACTION":
+            return jsonify(
+                {
+                    "status": "error",
+                    "message": f"Bootstrapper did not reach second WAIT_USER_ACTION (last state: {setup_state!r})",
+                    "steps": steps,
+                }
+            ), 500
+
+        log_step("Bootstrapper ready — sending setup payload …")
+
+        # --- Step 5: send the actual data packed into restore_data ---
+        restore_payload = json.dumps({
+            "target_version": target_version,
+            "manager_driver_id": manager_driver_id,
+            "manager_data": manager_data_str,
+            "config_data": config_data_str,
+        })
+        await _get_active_remote_client().send_setup_input(
+            bootstrapper_driver_id, {"restore_data": restore_payload}
+        )
+        await asyncio.sleep(API_DELAY * 2)
+
+        log_step(
+            "setup_input sent — bootstrapper should now be running verify_connection / _run_upgrade"
+        )
+        log_step("Watch the bootstrapper logs on the remote for further progress.")
+
+        return jsonify({"status": "ok", "steps": steps})
+
+    except Exception as e:  # pylint: disable=broad-except
+        _LOG.error("[DEV test-bootstrapper-setup] failed: %s", e)
+        return jsonify({"status": "error", "message": str(e), "steps": steps}), 500
 
 
 @app.route("/api/versions/check", methods=["POST"])
