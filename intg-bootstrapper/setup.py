@@ -21,7 +21,13 @@ import logging
 from typing import Any
 
 from const import BootstrapperConfig
-from ucapi import IntegrationSetupError, RequestUserInput, SetupComplete, SetupError, UserDataResponse
+from ucapi import (
+    IntegrationSetupError,
+    RequestUserInput,
+    SetupComplete,
+    SetupError,
+    UserDataResponse,
+)
 from ucapi_framework import BaseSetupFlow
 
 _LOG = logging.getLogger("setup_flow")
@@ -31,7 +37,16 @@ class BootstrapperSetupFlow(BaseSetupFlow[BootstrapperConfig]):
     """
     Setup flow for the bootstrapper integration.
 
-    Driven entirely by Integration Manager — never shown to a human user.
+    This flow is driven entirely by Integration Manager, not by the user.
+    IM installs the bootstrapper, starts its setup, and immediately sends
+    a single ``send_setup_input`` call with all four required values:
+
+    - ``target_version``    — IM release tag to install (e.g. "v2.1.0")
+    - ``manager_driver_id`` — driver ID of the currently running IM instance
+    - ``manager_data``      — serialised contents of IM's manager.json
+    - ``config_data``       — serialised contents of IM's config.json
+
+    After setup completes the ``BootstrapperDevice`` fires the upgrade.
     """
 
     async def _handle_restore_response(
@@ -61,10 +76,10 @@ class BootstrapperSetupFlow(BaseSetupFlow[BootstrapperConfig]):
             _LOG.error("Bootstrapper: restore_data is not valid JSON: %s", exc)
             return SetupError(IntegrationSetupError.OTHER)
 
-        target_version    = payload.get("target_version", "").strip()
+        target_version = payload.get("target_version", "").strip()
         manager_driver_id = payload.get("manager_driver_id", "").strip()
-        manager_data      = payload.get("manager_data", "{}").strip() or "{}"
-        config_data       = payload.get("config_data", "[]").strip() or "[]"
+        manager_data = payload.get("manager_data", "{}").strip() or "{}"
+        config_data = payload.get("config_data", "[]").strip() or "[]"
 
         if not target_version:
             _LOG.error("Bootstrapper: missing target_version in restore payload")
@@ -76,7 +91,10 @@ class BootstrapperSetupFlow(BaseSetupFlow[BootstrapperConfig]):
         _LOG.info(
             "Bootstrapper: restore payload parsed — target=%s driver_id=%s "
             "manager_data=%d bytes config_data=%d bytes",
-            target_version, manager_driver_id, len(manager_data), len(config_data),
+            target_version,
+            manager_driver_id,
+            len(manager_data),
+            len(config_data),
         )
 
         cfg = BootstrapperConfig(
@@ -88,21 +106,6 @@ class BootstrapperSetupFlow(BaseSetupFlow[BootstrapperConfig]):
         )
         self.config.add_or_update(cfg)
         return SetupComplete()
-
-    """
-    Setup flow for the bootstrapper integration.
-
-    This flow is driven entirely by Integration Manager, not by the user.
-    IM installs the bootstrapper, starts its setup, and immediately sends
-    a single ``send_setup_input`` call with all four required values:
-
-    - ``target_version``    — IM release tag to install (e.g. "v2.1.0")
-    - ``manager_driver_id`` — driver ID of the currently running IM instance
-    - ``manager_data``      — serialised contents of IM's manager.json
-    - ``config_data``       — serialised contents of IM's config.json
-
-    After setup completes the ``BootstrapperDevice`` fires the upgrade.
-    """
 
     def get_manual_entry_form(self) -> RequestUserInput:
         """
@@ -150,7 +153,9 @@ class BootstrapperSetupFlow(BaseSetupFlow[BootstrapperConfig]):
         :param input_values: Dictionary of field values sent by IM.
         :return: A populated BootstrapperConfig on success, or SetupError on failure.
         """
-        _LOG.info("Bootstrapper: query_device called with keys: %s", list(input_values.keys()))
+        _LOG.info(
+            "Bootstrapper: query_device called with keys: %s", list(input_values.keys())
+        )
 
         target_version = input_values.get("target_version", "").strip()
         manager_driver_id = input_values.get("manager_driver_id", "").strip()

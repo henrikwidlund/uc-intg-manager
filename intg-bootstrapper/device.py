@@ -58,7 +58,9 @@ class BootstrapperDevice(StatelessHTTPDevice):
         # Extract the API key and remote address from the first entry in config_data.
         # config_data is the serialised contents of config.json — a JSON array of
         # remote configs, each with an "api_key" and "address" field.
-        self._api_key, self._remote_address = self._parse_remote_credentials(config.config_data)
+        self._api_key, self._remote_address = self._parse_remote_credentials(
+            config.config_data
+        )
 
         _LOG.info(
             "BootstrapperDevice initialised — target=%s driver_id=%s remote=%s auth=%s",
@@ -118,9 +120,7 @@ class BootstrapperDevice(StatelessHTTPDevice):
                     "Bootstrapper: no api_key found in config_data entry — calls will be unauthenticated"
                 )
             else:
-                _LOG.debug(
-                    "Bootstrapper: extracted api_key for remote at %s", address
-                )
+                _LOG.debug("Bootstrapper: extracted api_key for remote at %s", address)
             return api_key, address
         except (json.JSONDecodeError, TypeError, KeyError) as exc:
             _LOG.error(
@@ -185,7 +185,9 @@ class BootstrapperDevice(StatelessHTTPDevice):
             await asyncio.sleep(3)
 
             # Step 4 — Install the new IM driver
-            installed_driver_id = await self._install_new_manager(archive_bytes, filename)
+            installed_driver_id = await self._install_new_manager(
+                archive_bytes, filename
+            )
 
             # Step 5 — Wait for the Remote to register and start the new driver
             _LOG.debug("Bootstrapper: pausing 5 s for driver registration …")
@@ -234,7 +236,9 @@ class BootstrapperDevice(StatelessHTTPDevice):
                             )
                         archive_bytes = await resp.read()
                 _LOG.info(
-                    "Bootstrapper: dev-downloaded %s (%d bytes)", filename, len(archive_bytes)
+                    "Bootstrapper: dev-downloaded %s (%d bytes)",
+                    filename,
+                    len(archive_bytes),
                 )
                 return archive_bytes, filename
             except aiohttp.ClientError as exc:
@@ -286,7 +290,9 @@ class BootstrapperDevice(StatelessHTTPDevice):
             "Bootstrapper: deleting old IM driver '%s' (and any deduped variants) …",
             base_driver_id,
         )
-        async with LoopbackRemoteClient(host=self._remote_address, api_key=self._api_key) as client:
+        async with LoopbackRemoteClient(
+            host=self._remote_address, api_key=self._api_key
+        ) as client:
             for driver_id in candidates:
                 # Step 1 — delete all instances for this variant first
                 try:
@@ -295,12 +301,16 @@ class BootstrapperDevice(StatelessHTTPDevice):
                         try:
                             await client.delete_instance(instance_id)
                         except RemoteAPIError as e:
-                            _LOG.warning("Failed to delete instance '%s': %s", instance_id, e)
+                            _LOG.warning(
+                                "Failed to delete instance '%s': %s", instance_id, e
+                            )
                 except RemoteAPIError as e:
                     if "404" in str(e) or "NOT_FOUND" in str(e):
                         pass  # driver doesn't exist, nothing to delete
                     else:
-                        _LOG.warning("Could not retrieve instances for '%s': %s", driver_id, e)
+                        _LOG.warning(
+                            "Could not retrieve instances for '%s': %s", driver_id, e
+                        )
                 # Step 2 — delete the driver itself (404 = already gone)
                 try:
                     await client.delete_driver(driver_id)
@@ -325,7 +335,9 @@ class BootstrapperDevice(StatelessHTTPDevice):
             filename,
             len(archive_bytes),
         )
-        async with LoopbackRemoteClient(host=self._remote_address, api_key=self._api_key) as client:
+        async with LoopbackRemoteClient(
+            host=self._remote_address, api_key=self._api_key
+        ) as client:
             result = await client.install_integration(archive_bytes, filename)
         _LOG.info("Bootstrapper: install response: %s", result)
         # The remote may assign a deduplicated ID (e.g. intg_manager_driver_dev2)
@@ -361,9 +373,7 @@ class BootstrapperDevice(StatelessHTTPDevice):
         :raises RemoteAPIError: If any API call fails.
         """
         driver_id = installed_driver_id
-        _LOG.info(
-            "Bootstrapper: starting setup on new IM driver '%s' …", driver_id
-        )
+        _LOG.info("Bootstrapper: starting setup on new IM driver '%s' …", driver_id)
 
         async with LoopbackRemoteClient(
             host=self._remote_address, api_key=self._api_key
@@ -377,7 +387,8 @@ class BootstrapperDevice(StatelessHTTPDevice):
                     if ("404" in str(e) or "NOT_FOUND" in str(e)) and attempt < 9:
                         _LOG.debug(
                             "Bootstrapper: driver '%s' not ready yet (attempt %d/10), retrying in 3 s …",
-                            driver_id, attempt + 1,
+                            driver_id,
+                            attempt + 1,
                         )
                         await asyncio.sleep(3)
                     else:
@@ -407,9 +418,7 @@ class BootstrapperDevice(StatelessHTTPDevice):
             _LOG.info(
                 "Bootstrapper: sending restore-prompt response to '%s' …", driver_id
             )
-            await client.send_setup_input(
-                driver_id, {"restore_from_backup": "true"}
-            )
+            await client.send_setup_input(driver_id, {"restore_from_backup": "true"})
             await asyncio.sleep(2)
 
             # Poll again — IM should now be on the RESTORE screen
@@ -449,11 +458,11 @@ class BootstrapperDevice(StatelessHTTPDevice):
         After this call the bootstrapper process will be killed by the remote.
         Any code after this point may not execute.
         """
-        _LOG.info(
-            "Bootstrapper: self-deleting driver '%s' …", BOOTSTRAPPER_DRIVER_ID
-        )
+        _LOG.info("Bootstrapper: self-deleting driver '%s' …", BOOTSTRAPPER_DRIVER_ID)
         try:
-            async with LoopbackRemoteClient(host=self._remote_address, api_key=self._api_key) as client:
+            async with LoopbackRemoteClient(
+                host=self._remote_address, api_key=self._api_key
+            ) as client:
                 await client.delete_driver(BOOTSTRAPPER_DRIVER_ID)
         except RemoteAPIError as exc:
             # The remote may kill the process before the response arrives — log

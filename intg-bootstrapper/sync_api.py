@@ -127,9 +127,7 @@ class LoopbackRemoteClient:
                         f"Authentication failed for {method} {endpoint}"
                     )
                 if response.status == 403:
-                    raise RemoteAPIError(
-                        f"Access forbidden for {method} {endpoint}"
-                    )
+                    raise RemoteAPIError(f"Access forbidden for {method} {endpoint}")
                 if response.status >= 400:
                     body = await response.text()
                     raise RemoteAPIError(

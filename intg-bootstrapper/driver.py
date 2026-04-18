@@ -59,7 +59,9 @@ async def main() -> None:
     # Setup handler — no discovery, programmatic setup only
     setup_handler = BootstrapperSetupFlow.create_handler(driver, discovery=None)
 
-    _LOG.info("Bootstrapper driver initialised — waiting for setup from Integration Manager")
+    _LOG.info(
+        "Bootstrapper driver initialised — waiting for setup from Integration Manager"
+    )
 
     await driver.api.init("driver.json", setup_handler)
 

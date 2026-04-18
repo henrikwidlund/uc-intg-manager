@@ -101,7 +101,9 @@ class GitHubClient:
                     )
                     return None
                 if response.status == 403:
-                    _LOG.warning("GitHubClient: rate limit exceeded for %s/%s", owner, repo)
+                    _LOG.warning(
+                        "GitHubClient: rate limit exceeded for %s/%s", owner, repo
+                    )
                     return None
                 _LOG.warning(
                     "GitHubClient: unexpected status %d for %s/%s tag %s",
@@ -121,9 +123,7 @@ class GitHubClient:
             )
             return None
 
-    async def get_latest_release(
-        self, owner: str, repo: str
-    ) -> dict[str, Any] | None:
+    async def get_latest_release(self, owner: str, repo: str) -> dict[str, Any] | None:
         """
         Fetch the latest published release.
 
@@ -144,7 +144,9 @@ class GitHubClient:
                     )
                     return None
                 if response.status == 403:
-                    _LOG.warning("GitHubClient: rate limit exceeded for %s/%s", owner, repo)
+                    _LOG.warning(
+                        "GitHubClient: rate limit exceeded for %s/%s", owner, repo
+                    )
                     return None
                 return None
         except aiohttp.ClientError as exc:
@@ -262,14 +264,10 @@ class GitHubClient:
         filename: str = target_asset.get("name", "archive.tar.gz")
 
         if not download_url:
-            _LOG.error(
-                "GitHubClient: asset '%s' has no browser_download_url", filename
-            )
+            _LOG.error("GitHubClient: asset '%s' has no browser_download_url", filename)
             return None
 
-        _LOG.info(
-            "GitHubClient: downloading '%s' from %s …", filename, download_url
-        )
+        _LOG.info("GitHubClient: downloading '%s' from %s …", filename, download_url)
 
         session = await self._get_session()
         try:
