@@ -10,15 +10,15 @@
 # build-install-bootstrapper.sh is called automatically with DEV_DOWNLOAD_URL
 # pointing at it.  IM itself is NOT installed on the remote in this mode.
 #
-# Defaults:
-#   REMOTE_HOST  = 10.0.0.42
-#   PIN          = 8201
-#   MAC_IP       = (not set — installs IM directly on the remote as normal)
+# Arguments:
+#   REMOTE_HOST  = IP address of the UC Remote (required)
+#   PIN          = Web-configurator PIN (required)
+#   MAC_IP       = (optional) host IP to serve the IM archive for bootstrapper testing
 
 set -euo pipefail
 
-REMOTE_HOST="${1:-10.0.0.42}"
-PIN="${2:-8201}"
+REMOTE_HOST="${1:?Usage: $0 REMOTE_HOST PIN [MAC_IP]}"
+PIN="${2:?Usage: $0 REMOTE_HOST PIN [MAC_IP]}"
 MAC_IP="${3:-}"
 HTTP_PORT="8000"
 REMOTE_USER="web-configurator"
@@ -47,7 +47,10 @@ docker run --rm --name builder \
     bash -c "
       cd /workspace && \
       python -m pip install --no-cache-dir -q -r requirements.txt && \
-      pyinstaller --clean --onedir --name intg-${DRIVER_ID} --collect-all zeroconf \
+      pyinstaller --clean --onedir --name intg-${DRIVER_ID} \
+                --collect-all zeroconf \
+                --collect-all quart \
+                --collect-all hypercorn \
                 --add-data 'intg-${INTG_NAME}/templates:templates' \
                 --add-data 'intg-${INTG_NAME}/static:static' \
                 intg-${INTG_NAME}/driver.py"

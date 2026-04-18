@@ -8,14 +8,15 @@
 # If DEV_DOWNLOAD_URL is provided, it is baked into const.py so the bootstrapper
 # downloads from that URL instead of GitHub.  Useful for local dev/testing.
 #
-# Defaults:
-#   REMOTE_HOST  = 10.0.0.42
-#   PIN          = 8201
+# Arguments:
+#   REMOTE_HOST      = IP address of the UC Remote (required)
+#   PIN              = Web-configurator PIN (required)
+#   DEV_DOWNLOAD_URL = (optional) local URL to override GitHub download for testing
 
 set -euo pipefail
 
-REMOTE_HOST="${1:-10.0.0.42}"
-PIN="${2:-8201}"
+REMOTE_HOST="${1:?Usage: $0 REMOTE_HOST PIN [DEV_DOWNLOAD_URL]}"
+PIN="${2:?Usage: $0 REMOTE_HOST PIN [DEV_DOWNLOAD_URL]}"
 DEV_DOWNLOAD_URL="${3:-}"
 REMOTE_USER="web-configurator"
 
