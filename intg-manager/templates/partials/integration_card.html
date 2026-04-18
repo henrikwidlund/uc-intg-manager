@@ -476,7 +476,7 @@
             </a>
             {% endif %}
 
-            {% if integration.update_available %}
+            {% if integration.update_available and not integration.external %}
             {% if integration.home_page and 'github.com' in integration.home_page %}
             {% set repo_path = integration.home_page.split('github.com/')[1].rstrip('/').split('?')[0].split('#')[0] %}
             {% set path_parts = repo_path.split('/') %}
