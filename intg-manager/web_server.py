@@ -1013,8 +1013,7 @@ async def _get_available_integrations(
         # Use registry IDs (not actual_driver_ids) for tracking to avoid false positives
         # when installing integrations (actual_driver_id can differ from registry id)
         integration_data = [
-            (item.get("id", ""), item.get("name", ""))
-            for item in registry
+            (item.get("id", ""), item.get("name", "")) for item in registry
         ]
         new_integrations = nm.update_registry_count(integration_data)
         if new_integrations:
@@ -3891,7 +3890,10 @@ async def self_update():
             async with _operation_lock:
                 _operation_in_progress = False
             return jsonify(
-                {"status": "error", "message": "Self-managed IM entry not found in registry"}
+                {
+                    "status": "error",
+                    "message": "Self-managed IM entry not found in registry",
+                }
             ), 404
 
         manager_repo_url = manager_entry.get("repository", "")
@@ -3920,9 +3922,13 @@ async def self_update():
         # Read our own driver_id from driver.json (the live value, not the registry)
         # so it works correctly with dev IDs like intg_manager_driver_dev.
         try:
-            _driver_json_path = os.path.join(os.path.dirname(__file__), "..", "driver.json")
+            _driver_json_path = os.path.join(
+                os.path.dirname(__file__), "..", "driver.json"
+            )
             with open(_driver_json_path, "r", encoding="utf-8") as _f:
-                manager_driver_id = json.load(_f).get("driver_id", "intg_manager_driver")
+                manager_driver_id = json.load(_f).get(
+                    "driver_id", "intg_manager_driver"
+                )
         except Exception:
             manager_driver_id = manager_entry.get("driver_id", "intg_manager_driver")
         _LOG.info("Self-update: using manager_driver_id=%s", manager_driver_id)
@@ -3984,15 +3990,23 @@ async def self_update():
                                 f"Dev bootstrapper download failed: HTTP {_dev_resp.status}"
                             )
                         archive_data = await _dev_resp.read()
-                filename = dev_bootstrapper_url.rstrip("/").split("/")[-1] or "bootstrapper.tar.gz"
+                filename = (
+                    dev_bootstrapper_url.rstrip("/").split("/")[-1]
+                    or "bootstrapper.tar.gz"
+                )
                 _LOG.info(
-                    "Dev-downloaded bootstrapper %s (%d bytes)", filename, len(archive_data)
+                    "Dev-downloaded bootstrapper %s (%d bytes)",
+                    filename,
+                    len(archive_data),
                 )
             except aiohttp.ClientError as exc:
                 async with _operation_lock:
                     _operation_in_progress = False
                 return jsonify(
-                    {"status": "error", "message": f"Dev bootstrapper download error: {exc}"}
+                    {
+                        "status": "error",
+                        "message": f"Dev bootstrapper download error: {exc}",
+                    }
                 ), 500
         else:
             # The bootstrapper is bundled as an asset in the same GitHub release as IM.
@@ -4079,12 +4093,14 @@ async def self_update():
         # The framework's _handle_restore_response reads only restore_data;
         # we pack all four fields as a JSON object inside it so the bootstrapper
         # can unpack them in its _handle_restore_response override.
-        restore_payload = json.dumps({
-            "target_version": version,
-            "manager_driver_id": manager_driver_id,
-            "manager_data": manager_data_str,
-            "config_data": config_data_str,
-        })
+        restore_payload = json.dumps(
+            {
+                "target_version": version,
+                "manager_driver_id": manager_driver_id,
+                "manager_data": manager_data_str,
+                "config_data": config_data_str,
+            }
+        )
         _LOG.info(
             "Sending bootstrapper setup payload: target_version=%s, manager_driver_id=%s",
             version,
@@ -4219,7 +4235,9 @@ async def dev_test_bootstrapper_setup():
 
         # --- Step 1: start_setup ---
         log_step(f"Calling start_setup({bootstrapper_driver_id!r}) …")
-        await _get_active_remote_client().start_setup(bootstrapper_driver_id, reconfigure=False)
+        await _get_active_remote_client().start_setup(
+            bootstrapper_driver_id, reconfigure=False
+        )
         await asyncio.sleep(API_DELAY * 3)
 
         # --- Step 2: poll for first WAIT_USER_ACTION (restore_from_backup screen) ---
@@ -4253,7 +4271,9 @@ async def dev_test_bootstrapper_setup():
         for attempt in range(5):
             resp = await _get_active_remote_client().get_setup(bootstrapper_driver_id)
             setup_state = resp.get("state", "")
-            log_step(f"  attempt {attempt + 1} (post-restore toggle): state={setup_state!r}")
+            log_step(
+                f"  attempt {attempt + 1} (post-restore toggle): state={setup_state!r}"
+            )
             if setup_state == "WAIT_USER_ACTION":
                 break
             await asyncio.sleep(API_DELAY * 3)
@@ -4270,12 +4290,14 @@ async def dev_test_bootstrapper_setup():
         log_step("Bootstrapper ready — sending setup payload …")
 
         # --- Step 5: send the actual data packed into restore_data ---
-        restore_payload = json.dumps({
-            "target_version": target_version,
-            "manager_driver_id": manager_driver_id,
-            "manager_data": manager_data_str,
-            "config_data": config_data_str,
-        })
+        restore_payload = json.dumps(
+            {
+                "target_version": target_version,
+                "manager_driver_id": manager_driver_id,
+                "manager_data": manager_data_str,
+                "config_data": config_data_str,
+            }
+        )
         await _get_active_remote_client().send_setup_input(
             bootstrapper_driver_id, {"restore_data": restore_payload}
         )

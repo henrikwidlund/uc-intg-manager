@@ -14,7 +14,13 @@ from typing import Any
 
 from const import MANAGER_DATA_FILE, RemoteConfig
 from remote_api import RemoteAPIClient, RemoteAPIError
-from ucapi import IntegrationSetupError, RequestUserInput, SetupComplete, SetupError, UserDataResponse
+from ucapi import (
+    IntegrationSetupError,
+    RequestUserInput,
+    SetupComplete,
+    SetupError,
+    UserDataResponse,
+)
 from ucapi_framework import BaseSetupFlow
 
 _LOG = logging.getLogger(__name__)
@@ -267,8 +273,6 @@ class RemoteSetupFlow(BaseSetupFlow[RemoteConfig]):
             except OSError as exc:
                 # Log but don't fail — the remote connection is restored; the user
                 # can re-import integration data from a backup if needed.
-                _LOG.error(
-                    "Setup restore: could not write manager.json: %s", exc
-                )
+                _LOG.error("Setup restore: could not write manager.json: %s", exc)
 
         return result
