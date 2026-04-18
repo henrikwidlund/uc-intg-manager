@@ -7,12 +7,20 @@ It provides forms for entering the remote IP and PIN.
 :license: Mozilla Public License Version 2.0, see LICENSE for more details.
 """
 
+import json
 import logging
+import os
 from typing import Any
 
-from const import RemoteConfig
+from const import MANAGER_DATA_FILE, RemoteConfig
 from remote_api import RemoteAPIClient, RemoteAPIError
-from ucapi import IntegrationSetupError, RequestUserInput, SetupError
+from ucapi import (
+    IntegrationSetupError,
+    RequestUserInput,
+    SetupComplete,
+    SetupError,
+    UserDataResponse,
+)
 from ucapi_framework import BaseSetupFlow
 
 _LOG = logging.getLogger(__name__)
@@ -209,3 +217,62 @@ class RemoteSetupFlow(BaseSetupFlow[RemoteConfig]):
         except Exception as ex:
             _LOG.error("Failed to connect to %s: %s", address, ex)
             return SetupError(IntegrationSetupError.CONNECTION_REFUSED)
+
+    async def _handle_restore_response(
+        self, msg: UserDataResponse
+    ) -> SetupComplete | SetupError | RequestUserInput:
+        """
+        Extended restore handler that also accepts ``manager_data``.
+
+        When called by the bootstrapper during a self-update the
+        ``send_setup_input`` payload contains two fields:
+
+        - ``restore_data``  — serialised ``config.json`` (list of remote configs);
+          processed by the base implementation to reconnect IM to its remotes.
+        - ``manager_data``  — serialised ``manager.json`` (integration settings &
+          backups); written to ``MANAGER_DATA_FILE`` so that all previous
+          integration configurations survive the upgrade.
+
+        Both are optional from the bootstrapper's perspective, but
+        ``restore_data`` is required by the base ``_handle_restore_response``
+        to succeed.  If ``manager_data`` is absent or empty the method falls
+        back to the base behaviour (normal user-driven restore with no
+        manager-data handoff).
+        """
+        manager_data = msg.input_values.get("manager_data", "").strip()
+
+        if manager_data:
+            _LOG.info(
+                "Setup restore: received manager_data (%d bytes) — will write to %s",
+                len(manager_data),
+                MANAGER_DATA_FILE,
+            )
+            try:
+                # Validate it is parseable JSON before the base restore commits
+                json.loads(manager_data)
+            except json.JSONDecodeError as exc:
+                _LOG.error(
+                    "Setup restore: manager_data is not valid JSON (%s) — ignoring",
+                    exc,
+                )
+                manager_data = ""
+
+        # Delegate config.json restore to the base class
+        result = await super()._handle_restore_response(msg)
+
+        # Only persist manager.json if the base restore succeeded
+        if manager_data and isinstance(result, SetupComplete):
+            try:
+                os.makedirs(os.path.dirname(MANAGER_DATA_FILE), exist_ok=True)
+                with open(MANAGER_DATA_FILE, "w", encoding="utf-8") as fh:
+                    fh.write(manager_data)
+                _LOG.info(
+                    "Setup restore: manager.json written (%d bytes)",
+                    len(manager_data),
+                )
+            except OSError as exc:
+                # Log but don't fail — the remote connection is restored; the user
+                # can re-import integration data from a backup if needed.
+                _LOG.error("Setup restore: could not write manager.json: %s", exc)
+
+        return result
