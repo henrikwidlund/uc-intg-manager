@@ -6,6 +6,8 @@ pyee>=9.0
 # Web framework
 flask>=3.0.0
 werkzeug>=3.0.0
+quart>=0.20.0
+hypercorn>=0.18.0
 
 # HTTP clients
 aiohttp>=3.9.0
