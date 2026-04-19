@@ -11,6 +11,12 @@ _Changes in the next release_
 
 ---
 
+## v1.6.3 - 2026-04-18
+### Fixed
+- **Version selector downgrade** — All "Select Version" buttons on the Integration Manager card now correctly route through the self-update bootstrapper flow (`/api/self-update`) instead of the standard integration install route.
+
+---
+
 ## v1.6.2 - 2026-04-18
 ### Fixed
 - **SSL certificate verification** — GitHub API calls from the async `GitHubClient` now use a certifi-backed SSL context, resolving `CERTIFICATE_VERIFY_FAILED` errors when checking for updates on the remote.
