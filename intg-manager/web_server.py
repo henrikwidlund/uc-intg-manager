@@ -5916,10 +5916,11 @@ async def download_complete_backup():
 async def upload_complete_backup():
     """Upload and restore complete backup file (all integrations + settings)."""
     try:
-        if "file" not in request.files:
+        files = await request.files
+        if "file" not in files:
             return jsonify({"status": "error", "message": "No file provided"}), 400
 
-        file = request.files["file"]
+        file = files["file"]
         if file.filename == "":
             return jsonify({"status": "error", "message": "No file selected"}), 400
 
