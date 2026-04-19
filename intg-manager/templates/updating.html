@@ -43,11 +43,11 @@
         </div>
     </div>
 
-    <!-- Live ping status — polls /health every 2 s -->
+    <!-- Live ping status — waits 15 s then polls /health every 3 s -->
     <!-- On 200 OK the response body is "OK"; JS redirects to / -->
     <div id="ping-target"
          hx-get="/health"
-         hx-trigger="every 2s"
+         hx-trigger="every 3s delay:15s"
          hx-swap="none"
          hx-on::after-request="if(event.detail.xhr.status === 200 && event.detail.xhr.responseText.trim() === 'OK') { window.location.href = '/'; }"
          class="hidden">

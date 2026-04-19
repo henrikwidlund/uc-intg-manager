@@ -11,6 +11,12 @@ _Changes in the next release_
 
 ---
 
+## v1.6.5 - 2026-04-18
+### Fixed
+- **Updating page poll delay** — The `/updating` page now waits 15 seconds before starting to poll `/health`, giving the bootstrapper time to fully uninstall the old Integration Manager before the page tries to reconnect.
+
+---
+
 ## v1.6.4 - 2026-04-18
 ### Fixed
 - **Release artifact name** — Build workflow now produces `uc-intg-manager-<version>-aarch64.tar.gz` (was `uc-intg-intg_manager_driver-...`), matching the bootstrapper's asset pattern so self-updates can find the correct file.
