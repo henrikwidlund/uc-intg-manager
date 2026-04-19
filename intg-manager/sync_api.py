@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import shutil
+import ssl
 from datetime import datetime
 from typing import Any
 
@@ -599,9 +600,11 @@ class GitHubClient:
     def _make_session(
         self, timeout: aiohttp.ClientTimeout | None = None
     ) -> aiohttp.ClientSession:
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
         return aiohttp.ClientSession(
             headers=self._default_headers,
             timeout=timeout or REQUEST_TIMEOUT,
+            connector=aiohttp.TCPConnector(ssl=ssl_context),
         )
 
     @staticmethod
