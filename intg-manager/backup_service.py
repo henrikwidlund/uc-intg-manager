@@ -319,8 +319,8 @@ def save_backup(driver_id: str, backup_data: str, remote_id: str | None = None) 
     # Ensure v2.0 structure
     if backups.get("version") != "2.0":
         backups["version"] = "2.0"
-        if "remotes" not in backups:
-            backups["remotes"] = {}
+    if "remotes" not in backups:
+        backups["remotes"] = {}
 
     # Resolve remote_id
     if remote_id is None:
