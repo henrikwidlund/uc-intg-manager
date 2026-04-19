@@ -43,15 +43,8 @@
         </div>
     </div>
 
-    <!-- Live ping status — waits 15 s then polls /health every 3 s -->
-    <!-- On 200 OK the response body is "OK"; JS redirects to / -->
-    <div id="ping-target"
-         hx-get="/health"
-         hx-trigger="every 3s delay:15s"
-         hx-swap="none"
-         hx-on::after-request="if(event.detail.xhr.status === 200 && event.detail.xhr.responseText.trim() === 'OK') { window.location.href = '/'; }"
-         class="hidden">
-    </div>
+    <!-- Live ping status: waits 15s for bootstrapper to uninstall old IM, then polls every 3s -->
+    <div id="ping-target" class="hidden"></div>
 
     <!-- Fallback manual link shown after 60 s -->
     <p id="fallback-msg" class="hidden text-sm text-gray-500 dark:text-gray-400 text-center">
@@ -60,6 +53,18 @@
     </p>
 
     <script>
+        // Wait 15s before starting to poll (bootstrapper needs time to uninstall old IM)
+        setTimeout(function() {
+            var el = document.getElementById('ping-target');
+            if (!el) return;
+            el.setAttribute('hx-get', '/health');
+            el.setAttribute('hx-trigger', 'every 3s');
+            el.setAttribute('hx-swap', 'none');
+            el.setAttribute('hx-on::after-request',
+                "if(event.detail.xhr.status === 200 && event.detail.xhr.responseText.trim() === 'OK') { window.location.href = '/'; }");
+            htmx.process(el);
+        }, 15000);
+
         // Show fallback link after 60 seconds in case something went wrong
         setTimeout(function() {
             var msg = document.getElementById('fallback-msg');

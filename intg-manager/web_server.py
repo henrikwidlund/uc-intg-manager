@@ -759,11 +759,11 @@ async def _get_installed_integrations(
                 # )
 
                 # Check if automated backup/restore is possible
-                # Requires: supports_backup AND version >= backup_min_version (if specified)
+                # Requires: supports_backup AND not self_managed AND version >= backup_min_version (if specified)
                 min_version = registry_item.get("backup_min_version")
-                info.can_auto_update = supports_backup
+                info.can_auto_update = supports_backup and not self_managed
 
-                if min_version and supports_backup:
+                if min_version and supports_backup and not self_managed:
                     try:
                         if Version(info.version) < Version(min_version):
                             info.can_auto_update = False

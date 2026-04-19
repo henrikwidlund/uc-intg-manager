@@ -11,6 +11,22 @@ _Changes in the next release_
 
 ---
 
+## v1.6.6 - 2026-04-19
+### Added
+- **Self-update** — Integration Manager can now update itself directly from the web UI. Clicking it installs a temporary bootstrapper integration on the remote, which downloads the new IM release from GitHub, replaces the old installation, restores all settings and backups, then removes itself — no manual intervention required.
+- **Firmware update check** — The diagnostics page now shows the current remote firmware version and highlights when a newer firmware release is available.
+
+### Changed
+- **Async web server** — Migrated from Flask to Quart (async-native). All route handlers are now `async`, enabling concurrent API calls without threading overhead.
+- **Async API client** — `sync_api.py` rewritten to use `aiohttp` throughout, removing synchronous `requests` calls from route handlers.
+- **Dependency updates** — `ucapi` bumped to `0.6.0`, `ucapi-framework` to `1.9.1`.
+
+### Fixed
+- **Docker backup support** — Integrations running in Docker containers can now be backed up correctly.
+- **Entity reconfigure on update** — Fixed a bug where updating an integration would not restore your configured entities after an upgrade.
+
+---
+
 ## v1.6.5 - 2026-04-18
 ### Fixed
 - **Updating page poll delay** — The `/updating` page now waits 15 seconds before starting to poll `/health`, giving the bootstrapper time to fully uninstall the old Integration Manager before the page tries to reconnect.
@@ -73,11 +89,9 @@ _Changes in the next release_
 ## v1.0.2 - 2025-12-12
 ### Corrections
 - More Pipeline fixes
-- 
+
 ## v1.0.1 - 2025-12-12
 ### Corrections
 - Pipeline fixes
-  
+
 ## v1.0.0 - 2025-12-12
-### Added
-- Initial integration manager release based on ucapi-framework.

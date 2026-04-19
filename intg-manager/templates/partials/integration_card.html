@@ -56,15 +56,10 @@
         
         <!-- Badges on the right -->
         <div class="flex items-center flex-wrap gap-2 flex-shrink-0">
-            {% if integration.update_available and not integration.official and not integration.external and not integration.self_managed %}
-            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-600 dark:bg-yellow-500/10 text-white dark:text-yellow-300" title="Update available: {{ integration.latest_version }}{% if not integration.can_auto_update %} (requires manual reconfiguration){% endif %}">
+            {% if integration.update_available and not integration.official and not integration.external %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-600 dark:bg-yellow-500/10 text-white dark:text-yellow-300" title="{% if not integration.can_update %}Update available: {{ integration.latest_version }} (version too old for automatic update - manual reinstall required){% elif not integration.can_auto_update and not integration.self_managed %}Update available: {{ integration.latest_version }} (requires manual reconfiguration){% else %}Update available: {{ integration.latest_version }}{% endif %}">
                 <i class="fa-solid fa-arrow-up w-3 h-3 mr-1"></i>
                 Update
-            </span>
-            {% elif integration.update_available and integration.self_managed %}
-            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-600 dark:bg-yellow-500/10 text-white dark:text-yellow-300" title="Update available: {{ integration.latest_version }} - managed externally">
-                <i class="fa-solid fa-arrow-up w-3 h-3 mr-1"></i>
-                Update Available
             </span>
             {% elif integration.official %}
             <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-teal-600 dark:bg-teal-500/10 text-white dark:text-teal-300" title="Official UC integration - managed by firmware updates">
@@ -378,6 +373,127 @@
                class="text-xs text-yellow-600 hover:text-yellow-500 dark:text-yellow-400 dark:hover:text-yellow-300 italic transition-colors">
                 <i class="fas fa-external-link-alt mr-1"></i>Configure on Remote
             </a>
+            {% elif integration.self_managed %}
+            <!-- Self-managed integration (Integration Manager itself) - must come before custom -->
+            {% if integration.home_page and 'github.com' in integration.home_page %}
+            {% set repo_path = integration.home_page.split('github.com/')[1].rstrip('/').split('?')[0].split('#')[0] %}
+            {% set path_parts = repo_path.split('/') %}
+            {% if path_parts|length >= 2 and path_parts[0] and path_parts[1] %}
+            {% set owner = path_parts[0] %}
+            {% set repo = path_parts[1] %}
+            <button
+                hx-get="/api/version-selector/{{ owner }}/{{ repo }}/{{ integration.driver_id }}?self_update=true"
+                hx-target="#modal-content"
+                hx-swap="innerHTML"
+                hx-on::before-request="openModal('Select Version')"
+                class="text-gray-400 hover:text-white hover:bg-uc-card rounded-lg transition-colors p-1.5"
+                title="Select version">
+                <i class="fa-solid fa-list-ul h-4 w-4"></i>
+            </button>
+            {% endif %}
+            {% endif %}
+
+            <button
+                hx-get="/api/integration/{{ integration.driver_id }}/delete-confirm"
+                hx-target="#modal-content"
+                hx-swap="innerHTML"
+                hx-on::before-request="openModal('Delete Integration')"
+                class="text-gray-400 hover:text-red-400 hover:bg-uc-card rounded-lg transition-colors p-1.5"
+                title="Delete integration">
+                <i class="fa-solid fa-trash-alt h-4 w-4"></i>
+            </button>
+
+            {% if integration.home_page %}
+            <a href="{{ integration.home_page }}" target="_blank" rel="noopener"
+               class="text-gray-400 hover:text-white hover:bg-uc-card rounded-lg transition-colors p-1.5"
+               title="View on GitHub">
+                <i class="fa-brands fa-github h-4 w-4"></i>
+            </a>
+            {% endif %}
+
+            {% if integration.update_available %}
+            {% if integration.home_page and 'github.com' in integration.home_page %}
+            {% set repo_path = integration.home_page.split('github.com/')[1].rstrip('/').split('?')[0].split('#')[0] %}
+            {% set path_parts = repo_path.split('/') %}
+            {% if path_parts|length >= 2 and path_parts[0] and path_parts[1] %}
+            {% set owner = path_parts[0] %}
+            {% set repo = path_parts[1] %}
+            <span class="text-xs text-gray-500 dark:text-gray-400 font-mono">v{{ integration.version }}</span>
+            <span class="text-gray-500 dark:text-gray-600">→</span>
+            <div class="relative inline-flex rounded-lg shadow-sm">
+                <button
+                    class="inline-flex items-center px-3 py-1.5 bg-yellow-600 dark:bg-yellow-500/10 hover:bg-yellow-700 dark:hover:bg-yellow-500/30 text-white dark:text-yellow-300 text-sm font-semibold rounded-l-lg transition-colors border-r border-yellow-700 dark:border-yellow-500/30"
+                    hx-post="/api/self-update?version={{ integration.latest_version }}"
+                    hx-swap="none"
+                    hx-on::before-request="document.getElementById('upgrade-overlay-{{ integration.driver_id }}').classList.remove('hidden');"
+                    hx-on::after-request="if(event.detail.successful) window.location.href='/updating?version={{ integration.latest_version }}'; else document.getElementById('upgrade-overlay-{{ integration.driver_id }}').classList.add('hidden');"
+                    title="{% if integration.latest_version < integration.version %}Downgrade{% else %}Update{% endif %} Integration Manager to {{ integration.latest_version }}">
+                    <i class="fa-solid {% if integration.latest_version < integration.version %}fa-download{% else %}fa-upload{% endif %} h-4 w-4 mr-1.5"></i>
+                    {{ integration.latest_version }}
+                </button>
+                <button
+                    type="button"
+                    class="inline-flex items-center px-2 py-1.5 bg-yellow-600 dark:bg-yellow-500/10 hover:bg-yellow-700 dark:hover:bg-yellow-500/30 text-white dark:text-yellow-300 text-sm rounded-r-lg transition-colors"
+                    onclick="toggleDropdown(event, 'dropdown-self-nc-{{ integration.driver_id }}')"
+                    title="More update options">
+                    <i class="fa-solid fa-chevron-down h-3 w-3"></i>
+                </button>
+                <div id="dropdown-self-nc-{{ integration.driver_id }}"
+                     class="hidden absolute right-0 top-full mt-1 w-56 bg-white dark:bg-uc-card border border-gray-200 dark:border-uc-border rounded-lg shadow-xl z-50">
+                    <div class="py-1">
+                        {% if integration.instance_id and integration.supports_backup %}
+                        <button
+                            class="w-full text-left flex items-center gap-2 px-4 py-2.5 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-uc-darker transition-colors"
+                            hx-post="/api/backup/{{ integration.driver_id }}"
+                            hx-swap="none"
+                            hx-indicator="#backup-overlay-{{ integration.driver_id }}"
+                            onclick="toggleDropdown(event, 'dropdown-self-nc-{{ integration.driver_id }}', true)"
+                            hx-on::after-request="if(event.detail.successful) { this.classList.add('text-green-400'); setTimeout(() => this.classList.remove('text-green-400'), 3000); }"
+                            title="Backup configuration before update">
+                            <i class="fa-solid fa-download w-4 text-gray-400"></i>
+                            Backup Config
+                        </button>
+                        {% endif %}
+                        {% if integration.latest_changelog_url %}
+                        <button
+                            hx-get="{{ integration.latest_changelog_url }}"
+                            hx-target="#modal-content"
+                            hx-swap="innerHTML"
+                            hx-on::before-request="toggleDropdown(event, 'dropdown-self-nc-{{ integration.driver_id }}', true); openModal('Release Notes - {{ integration.latest_version }}')"
+                            class="w-full text-left flex items-center gap-2 px-4 py-2.5 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-uc-darker transition-colors">
+                            <i class="fa-solid fa-file-lines w-4 text-gray-400"></i>
+                            Release Notes
+                        </button>
+                        {% endif %}
+                        <button
+                            hx-get="/api/version-selector/{{ owner }}/{{ repo }}/{{ integration.driver_id }}?self_update=true"
+                            hx-target="#modal-content"
+                            hx-swap="innerHTML"
+                            hx-on::before-request="toggleDropdown(event, 'dropdown-self-nc-{{ integration.driver_id }}', true); openModal('Select Version')"
+                            class="w-full text-left flex items-center gap-2 px-4 py-2.5 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-uc-darker transition-colors">
+                            <i class="fa-solid fa-list-ul w-4 text-gray-400"></i>
+                            Select Version
+                        </button>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+            {% endif %}
+            {% else %}
+            <span class="text-xs text-gray-500 dark:text-gray-400 italic">Up to date</span>
+            {% if integration.instance_id and integration.supports_backup %}
+            <button
+                class="backup-btn inline-flex items-center px-3 py-1.5 bg-gray-100 dark:bg-uc-darker hover:bg-gray-200 dark:hover:bg-uc-card text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white text-sm font-medium rounded-lg transition-colors"
+                hx-post="/api/backup/{{ integration.driver_id }}"
+                hx-swap="none"
+                hx-indicator="#backup-overlay-{{ integration.driver_id }}"
+                hx-on::after-request="if(event.detail.successful) { this.classList.add('text-green-400'); setTimeout(() => this.classList.remove('text-green-400'), 2000); }"
+                title="Backup configuration">
+                <i class="fa-solid fa-download h-4 w-4 mr-1"></i>
+                Backup
+            </button>
+            {% endif %}
+            {% endif %}
             {% elif integration.custom %}
             <!-- Custom integrations installed on the remote -->
             <!-- Version selector button -->
@@ -466,83 +582,7 @@
             {% else %}
             <span class="text-xs text-blue-700 dark:text-blue-400 italic">Managed via Docker</span>
             {% endif %}
-            {% elif integration.self_managed %}
-            <!-- Self-managed integration (Integration Manager itself) -->
-            {% if integration.home_page %}
-            <a href="{{ integration.home_page }}" target="_blank" rel="noopener"
-               class="text-gray-400 hover:text-white hover:bg-uc-card rounded-lg transition-colors p-1.5"
-               title="View on GitHub">
-                <i class="fa-brands fa-github h-4 w-4"></i>
-            </a>
-            {% endif %}
-
-            {% if integration.update_available and not integration.external %}
-            {% if integration.home_page and 'github.com' in integration.home_page %}
-            {% set repo_path = integration.home_page.split('github.com/')[1].rstrip('/').split('?')[0].split('#')[0] %}
-            {% set path_parts = repo_path.split('/') %}
-            {% if path_parts|length >= 2 and path_parts[0] and path_parts[1] %}
-            {% set owner = path_parts[0] %}
-            {% set repo = path_parts[1] %}
-
-            <!-- Current version label -->
-            <span class="text-xs text-gray-500 dark:text-gray-400 font-mono">v{{ integration.version }}</span>
-            <span class="text-gray-500 dark:text-gray-600">→</span>
-
-            <!-- Self-update split button -->
-            <div class="relative inline-flex rounded-lg shadow-sm">
-                <button
-                    class="inline-flex items-center px-3 py-1.5 bg-yellow-500 hover:bg-yellow-400 text-gray-900 text-sm font-semibold rounded-l-lg transition-colors"
-                    hx-post="/api/self-update?version={{ integration.latest_version }}"
-                    hx-swap="none"
-                    hx-on::before-request="document.getElementById('upgrade-overlay-{{ integration.driver_id }}').classList.remove('hidden');"
-                    hx-on::after-request="if(event.detail.successful) window.location.href='/updating?version={{ integration.latest_version }}'; else document.getElementById('upgrade-overlay-{{ integration.driver_id }}').classList.add('hidden');"
-                    title="Update Integration Manager to {{ integration.latest_version }}">
-                    <i class="fa-solid fa-upload h-4 w-4 mr-1.5"></i>
-                    {{ integration.latest_version }}
-                </button>
-                <button
-                    type="button"
-                    class="inline-flex items-center px-2 py-1.5 bg-yellow-600 hover:bg-yellow-500 text-gray-900 text-sm rounded-r-lg border-l border-yellow-700 transition-colors"
-                    onclick="toggleDropdown(event, 'dropdown-self-{{ integration.driver_id }}')"
-                    title="More update options">
-                    <i class="fa-solid fa-chevron-down h-3 w-3"></i>
-                </button>
-                <!-- Dropdown -->
-                <div id="dropdown-self-{{ integration.driver_id }}"
-                     class="hidden absolute right-0 top-full mt-1 w-56 bg-white dark:bg-uc-card border border-gray-200 dark:border-uc-border rounded-lg shadow-xl z-50">
-                    <div class="py-1">
-                        <!-- Release notes -->
-                        {% if integration.latest_changelog_url %}
-                        <button
-                            hx-get="{{ integration.latest_changelog_url }}"
-                            hx-target="#modal-content"
-                            hx-swap="innerHTML"
-                            hx-on::before-request="toggleDropdown(event, 'dropdown-self-{{ integration.driver_id }}', true); openModal('Release Notes - {{ integration.latest_version }}')"
-                            class="w-full text-left flex items-center gap-2 px-4 py-2.5 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-uc-darker transition-colors">
-                            <i class="fa-solid fa-file-lines w-4 text-gray-400"></i>
-                            Release Notes
-                        </button>
-                        {% endif %}
-                        <!-- Select version -->
-                        <button
-                            hx-get="/api/version-selector/{{ owner }}/{{ repo }}/{{ integration.driver_id }}?self_update=true"
-                            hx-target="#modal-content"
-                            hx-swap="innerHTML"
-                            hx-on::before-request="toggleDropdown(event, 'dropdown-self-{{ integration.driver_id }}', true); openModal('Select Version')"
-                            class="w-full text-left flex items-center gap-2 px-4 py-2.5 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-uc-darker transition-colors">
-                            <i class="fa-solid fa-list-ul w-4 text-gray-400"></i>
-                            Select Version
-                        </button>
-                    </div>
-                </div>
-            </div>
-
-            {% endif %}
-            {% endif %}
-            {% else %}
-            <!-- No update available -->
-            <span class="text-xs text-gray-500 dark:text-gray-400 italic">Up to date</span>
-            {% endif %}
+            {# self_managed is now handled earlier in the elif chain above #}
 
             {% else %}
             <!-- Official integration - show info only -->
