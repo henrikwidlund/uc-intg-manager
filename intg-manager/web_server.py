@@ -5901,11 +5901,11 @@ async def download_complete_backup():
         backup_bytes = backup_json.encode("utf-8")
         backup_io = io.BytesIO(backup_bytes)
 
-        return send_file(
+        return await send_file(
             backup_io,
             mimetype="application/json",
             as_attachment=True,
-            download_name="uc_integration_manager_backup.json",
+            attachment_filename="uc_integration_manager_backup.json",
         )
     except Exception as e:
         _LOG.error("Failed to download complete backup: %s", e)
@@ -5925,7 +5925,7 @@ async def upload_complete_backup():
 
         # Read and validate JSON
         try:
-            content = file.read().decode("utf-8")
+            content = (await file.read()).decode("utf-8")
             backup_data = json.loads(content)
         except (UnicodeDecodeError, json.JSONDecodeError) as e:
             return jsonify(
