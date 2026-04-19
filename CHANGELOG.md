@@ -11,6 +11,13 @@ _Changes in the next release_
 
 ---
 
+## v1.6.4 - 2026-04-18
+### Fixed
+- **Release artifact name** — Build workflow now produces `uc-intg-manager-<version>-aarch64.tar.gz` (was `uc-intg-intg_manager_driver-...`), matching the bootstrapper's asset pattern so self-updates can find the correct file.
+- **Upgrade overlay delay** — Upgrade overlay now appears immediately on click rather than waiting for the HTMX indicator debounce delay, both from the direct update button and the version selector modal.
+
+---
+
 ## v1.6.3 - 2026-04-18
 ### Fixed
 - **Version selector downgrade** — All "Select Version" buttons on the Integration Manager card now correctly route through the self-update bootstrapper flow (`/api/self-update`) instead of the standard integration install route.

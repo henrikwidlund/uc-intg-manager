@@ -494,8 +494,8 @@
                     class="inline-flex items-center px-3 py-1.5 bg-yellow-500 hover:bg-yellow-400 text-gray-900 text-sm font-semibold rounded-l-lg transition-colors"
                     hx-post="/api/self-update?version={{ integration.latest_version }}"
                     hx-swap="none"
-                    hx-indicator="#upgrade-overlay-{{ integration.driver_id }}"
-                    hx-on::after-request="if(event.detail.successful) window.location.href='/updating?version={{ integration.latest_version }}';"
+                    hx-on::before-request="document.getElementById('upgrade-overlay-{{ integration.driver_id }}').classList.remove('hidden');"
+                    hx-on::after-request="if(event.detail.successful) window.location.href='/updating?version={{ integration.latest_version }}'; else document.getElementById('upgrade-overlay-{{ integration.driver_id }}').classList.add('hidden');"
                     title="Update Integration Manager to {{ integration.latest_version }}">
                     <i class="fa-solid fa-upload h-4 w-4 mr-1.5"></i>
                     {{ integration.latest_version }}

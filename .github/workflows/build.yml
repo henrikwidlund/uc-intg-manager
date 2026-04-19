@@ -73,7 +73,7 @@ jobs:
           mv dist/intg-${{ env.DRIVER_ID }}/* artifacts/bin
           mv artifacts/bin/intg-${{ env.DRIVER_ID }} artifacts/bin/driver
           cp driver.json artifacts/
-          echo "ARTIFACT_NAME=uc-intg-${{ env.DRIVER_ID }}-${{ env.VERSION }}-aarch64" >> $GITHUB_ENV
+          echo "ARTIFACT_NAME=uc-intg-manager-${{ env.VERSION }}-aarch64" >> $GITHUB_ENV
 
       - name: Create upload artifact archive
         shell: bash
