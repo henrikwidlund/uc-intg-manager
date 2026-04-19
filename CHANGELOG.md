@@ -11,9 +11,15 @@ _Changes in the next release_
 
 ---
 
+## v1.6.2 - 2026-04-18
+### Fixed
+- **SSL certificate verification** — GitHub API calls from the async `GitHubClient` now use a certifi-backed SSL context, resolving `CERTIFICATE_VERIFY_FAILED` errors when checking for updates on the remote.
+
+---
+
 ## v1.6.1 - 2026-04-18
 ### Added
-- **Self-update** — Integration Manager can now update itself directly from the web UI. When a new version is available, a split button appears on the IM card. Clicking it installs a temporary bootstrapper integration on the remote, which downloads the new IM release from GitHub, replaces the old installation, restores all settings and backups, then removes itself — no manual intervention required.
+- **Self-update** — Integration Manager can now update itself directly from the web UI. Clicking it installs a temporary bootstrapper integration on the remote, which downloads the new IM release from GitHub, replaces the old installation, restores all settings and backups, then removes itself — no manual intervention required.
 - **Firmware update check** — The diagnostics page now shows the current remote firmware version and highlights when a newer firmware release is available.
 
 ### Changed
