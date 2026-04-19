@@ -5926,7 +5926,7 @@ async def upload_complete_backup():
 
         # Read and validate JSON
         try:
-            content = (await file.read()).decode("utf-8")
+            content = file.read().decode("utf-8")
             backup_data = json.loads(content)
         except (UnicodeDecodeError, json.JSONDecodeError) as e:
             return jsonify(
