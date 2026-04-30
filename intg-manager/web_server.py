@@ -68,6 +68,7 @@ from sync_api import (
     find_orphaned_ir_codesets,
     get_cached_repo_info,
     load_registry,
+    load_registry_data,
     load_repo_cache,
     save_repo_cache,
 )
@@ -5368,6 +5369,46 @@ async def inject_orphaned_entities_count():
     except Exception as e:
         _LOG.debug("Failed to get orphaned entities count: %s", e)
         return {"orphaned_entities_count": 0}
+
+
+_SPONSOR_URL_TEMPLATES: dict[str, str] = {
+    "github": "https://github.com/sponsors/{}",
+    "buy_me_a_coffee": "https://www.buymeacoffee.com/{}",
+    "paypal": "https://www.paypal.com/paypalme/{}",
+    "patreon": "https://www.patreon.com/{}",
+    "ko-fi": "https://ko-fi.com/{}",
+    "venmo": "https://venmo.com/{}",
+    "cashapp": "https://cash.app/${}",
+}
+
+
+def _get_sponsors() -> dict[str, dict]:
+    """Load and normalise sponsors from registry.json, keyed by developer name."""
+    try:
+        data = load_registry_data()
+        sponsors_list = data.get("sponsors", []) if isinstance(data, dict) else []
+        result: dict[str, dict] = {}
+        for sponsor in sponsors_list:
+            name = sponsor.get("name", "")
+            if not name:
+                continue
+            links: dict[str, str] = {}
+            for platform, value in sponsor.get("links", {}).items():
+                if value.startswith("http"):
+                    links[platform] = value
+                elif platform in _SPONSOR_URL_TEMPLATES:
+                    links[platform] = _SPONSOR_URL_TEMPLATES[platform].format(value)
+            result[name] = {"description": sponsor.get("description", ""), "links": links}
+        return result
+    except Exception as e:
+        _LOG.debug("Failed to load sponsors: %s", e)
+        return {}
+
+
+@app.context_processor
+async def inject_sponsors():
+    """Inject sponsors lookup dict into all templates."""
+    return {"sponsors": _get_sponsors()}
 
 
 @app.route("/system-messages")

@@ -1,5 +1,10 @@
 <!-- Available Integrations List Partial - Loaded via HTMX -->
 
+{% set custom_count = integrations | selectattr('custom') | list | length %}
+<span id="custom-integration-count" hx-swap-oob="innerHTML">
+    {{ custom_count }} community integration{{ 's' if custom_count != 1 else '' }} and counting!
+</span>
+
 {% if integrations %}
 <div class="grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-4">
     {% for integration in integrations %}

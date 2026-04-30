@@ -121,6 +121,36 @@
             
             <!-- Action buttons and version upgrade -->
             <div class="flex items-center gap-2">
+            <!-- Sponsor button -->
+            {% if integration.custom and sponsors.get(integration.developer) %}
+            {% set _spo = sponsors.get(integration.developer) %}
+            <div class="group relative">
+                <button class="p-1.5 text-pink-500 dark:text-pink-400 hover:bg-uc-card rounded-lg transition-colors" title="Support {{ integration.developer }}">
+                    <i class="fa-solid fa-heart h-4 w-4"></i>
+                </button>
+                <div class="absolute left-0 bottom-full mb-1.5 hidden group-hover:block z-[9999]">
+                    <div class="bg-white dark:bg-uc-card border border-gray-200 dark:border-uc-border rounded-lg shadow-xl overflow-hidden min-w-max">
+                        <div class="px-3 py-1.5 bg-gray-50 dark:bg-uc-darker border-b border-gray-200 dark:border-uc-border">
+                            <p class="text-xs font-semibold text-gray-500 dark:text-gray-400">Support {{ integration.developer }}</p>
+                        </div>
+                        {% for platform, url in _spo.links.items() %}
+                        <a href="{{ url }}" target="_blank" rel="noopener noreferrer"
+                           class="flex items-center gap-2.5 px-3 py-1.5 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-uc-darker hover:text-gray-900 dark:hover:text-white transition-colors whitespace-nowrap">
+                            {% if platform == 'github' %}<i class="fa-brands fa-github w-4 text-center"></i><span>GitHub Sponsors</span>
+                            {% elif platform == 'buy_me_a_coffee' %}<i class="fa-solid fa-mug-saucer w-4 text-center text-yellow-500"></i><span>Buy Me a Coffee</span>
+                            {% elif platform == 'paypal' %}<i class="fa-brands fa-paypal w-4 text-center text-blue-500"></i><span>PayPal</span>
+                            {% elif platform == 'patreon' %}<i class="fa-brands fa-patreon w-4 text-center text-orange-500"></i><span>Patreon</span>
+                            {% elif platform == 'ko-fi' %}<i class="fa-brands fa-ko-fi w-4 text-center text-blue-400"></i><span>Ko-fi</span>
+                            {% elif platform == 'venmo' %}<i class="fa-brands fa-venmo-v w-4 text-center text-blue-400"></i><span>Venmo</span>
+                            {% elif platform == 'cashapp' %}<i class="fa-brands fa-cash-app w-4 text-center text-green-500"></i><span>Cash App</span>
+                            {% else %}<i class="fa-solid fa-arrow-up-right-from-square w-4 text-center"></i><span>Support</span>
+                            {% endif %}
+                        </a>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+            {% endif %}
             <!-- Action icons first -->
             {% if integration.home_page and 'github.com' in integration.home_page %}
             {% set repo_path = integration.home_page.split('github.com/')[1].rstrip('/').split('?')[0].split('#')[0] %}
@@ -328,6 +358,36 @@
         </div>
         
         <div class="flex items-center gap-2">
+            <!-- Sponsor button -->
+            {% if integration.custom and sponsors.get(integration.developer) %}
+            {% set _spo = sponsors.get(integration.developer) %}
+            <div class="group relative">
+                <button class="p-1.5 text-pink-500 dark:text-pink-400 hover:bg-uc-card rounded-lg transition-colors" title="Support {{ integration.developer }}">
+                    <i class="fa-solid fa-heart h-4 w-4"></i>
+                </button>
+                <div class="absolute left-0 bottom-full mb-1.5 hidden group-hover:block z-[9999]">
+                    <div class="bg-white dark:bg-uc-card border border-gray-200 dark:border-uc-border rounded-lg shadow-xl overflow-hidden min-w-max">
+                        <div class="px-3 py-1.5 bg-gray-50 dark:bg-uc-darker border-b border-gray-200 dark:border-uc-border">
+                            <p class="text-xs font-semibold text-gray-500 dark:text-gray-400">Support {{ integration.developer }}</p>
+                        </div>
+                        {% for platform, url in _spo.links.items() %}
+                        <a href="{{ url }}" target="_blank" rel="noopener noreferrer"
+                           class="flex items-center gap-2.5 px-3 py-1.5 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-uc-darker hover:text-gray-900 dark:hover:text-white transition-colors whitespace-nowrap">
+                            {% if platform == 'github' %}<i class="fa-brands fa-github w-4 text-center"></i><span>GitHub Sponsors</span>
+                            {% elif platform == 'buy_me_a_coffee' %}<i class="fa-solid fa-mug-saucer w-4 text-center text-yellow-500"></i><span>Buy Me a Coffee</span>
+                            {% elif platform == 'paypal' %}<i class="fa-brands fa-paypal w-4 text-center text-blue-500"></i><span>PayPal</span>
+                            {% elif platform == 'patreon' %}<i class="fa-brands fa-patreon w-4 text-center text-orange-500"></i><span>Patreon</span>
+                            {% elif platform == 'ko-fi' %}<i class="fa-brands fa-ko-fi w-4 text-center text-blue-400"></i><span>Ko-fi</span>
+                            {% elif platform == 'venmo' %}<i class="fa-brands fa-venmo-v w-4 text-center text-blue-400"></i><span>Venmo</span>
+                            {% elif platform == 'cashapp' %}<i class="fa-brands fa-cash-app w-4 text-center text-green-500"></i><span>Cash App</span>
+                            {% else %}<i class="fa-solid fa-arrow-up-right-from-square w-4 text-center"></i><span>Support</span>
+                            {% endif %}
+                        </a>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+            {% endif %}
             {% if integration.state == 'NOT_CONFIGURED' %}
             <!-- Unconfigured driver - link to remote configurator -->
             <!-- Version selector button for custom integrations with GitHub repo -->
@@ -479,8 +539,6 @@
             </div>
             {% endif %}
             {% endif %}
-            {% else %}
-            <span class="text-xs text-gray-500 dark:text-gray-400 italic">Up to date</span>
             {% if integration.instance_id and integration.supports_backup %}
             <button
                 class="backup-btn inline-flex items-center px-3 py-1.5 bg-gray-100 dark:bg-uc-darker hover:bg-gray-200 dark:hover:bg-uc-card text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white text-sm font-medium rounded-lg transition-colors"

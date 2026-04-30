@@ -945,30 +945,31 @@ def get_cached_repo_info(
 
 def load_registry() -> list[dict[str, Any]]:
     """Load the integrations registry from URL or local file."""
+    data = load_registry_data()
+    if isinstance(data, dict) and "integrations" in data:
+        return data["integrations"]
+    if isinstance(data, list):
+        return data
+    return []
+
+
+def load_registry_data() -> dict[str, Any] | list:
+    """Load the full registry payload (integrations + sponsors + any future keys)."""
     try:
         if os.path.exists(KNOWN_INTEGRATIONS_URL):
             with open(KNOWN_INTEGRATIONS_URL, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, dict) and "integrations" in data:
-                    return data["integrations"]
-                if isinstance(data, list):
-                    return data
-                return []
+                return json.load(f)
         response = requests.get(
             KNOWN_INTEGRATIONS_URL,
             timeout=_SYNC_REQUEST_TIMEOUT,
             verify=certifi.where(),
         )
         if response.status_code == 200:
-            data = response.json()
-            if isinstance(data, dict) and "integrations" in data:
-                return data["integrations"]
-            if isinstance(data, list):
-                return data
-        return []
+            return response.json()
+        return {}
     except (requests.RequestException, OSError, json.JSONDecodeError) as e:
         _LOG.warning("Failed to load registry: %s", e)
-        return []
+        return {}
 
 
 def migrate_to_multi_remote(default_remote_id: str, default_remote_name: str) -> bool:
