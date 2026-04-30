@@ -116,10 +116,6 @@ app.config["PERMANENT_SESSION_LIFETIME"] = 7776000  # 90 days
 _remote_clients: dict[str, RemoteClient] = {}
 _remote_configs: dict[str, RemoteConfig] = {}
 
-# Cached orphan count per remote (activities with orphaned entities + orphaned IR codesets).
-# Populated by periodic background polling so template renders never block on remote API calls.
-_orphan_count_cache: dict[str, int] = {}
-
 # GitHub client (shared across all remotes)
 _github_client: GitHubClient | None = None
 # Sync-only GitHub client for fetch_repository_batch (runs in thread, no event loop)
@@ -167,6 +163,30 @@ def _get_active_remote_client() -> RemoteClient | None:
     if remote_id:
         return _remote_clients.get(remote_id)
     return None
+
+
+def is_remote_online(remote_id: str | None) -> bool:
+    """Return True if the named remote is currently considered online.
+
+    Imported lazily to avoid an import cycle with device.py.
+    """
+    if not remote_id:
+        return False
+    try:
+        from device import is_remote_online as _device_is_remote_online
+    except ImportError:
+        return False
+    return _device_is_remote_online(remote_id)
+
+
+def _render_offline_partial() -> str:
+    """Return a small HTML partial used by HTMX endpoints when the active remote is offline."""
+    return (
+        "<div class='p-6 text-center text-gray-500 dark:text-gray-400'>"
+        "<i class='fa-solid fa-plug-circle-xmark mr-2'></i>"
+        "Remote is offline. Data will load when the remote comes back online."
+        "</div>"
+    )
 
 
 def get_notification_manager(remote_id: str | None = None):
@@ -1172,12 +1192,12 @@ async def get_installed_count():
     - driver_type is CUSTOM or EXTERNAL (always count)
     - driver_type is LOCAL only if it has a configured instance
     """
-    if not _get_active_remote_client():
+    remote_id = get_active_remote_id()
+    if not _get_active_remote_client() or not is_remote_online(remote_id):
         return "0"
 
     try:
         # Get all installed integrations (includes configured and unconfigured)
-        remote_id = get_active_remote_id()
         integrations = await _get_installed_integrations(remote_id)
 
         count = len(integrations)
@@ -1191,11 +1211,16 @@ async def get_installed_count():
 @app.route("/api/stats/updates-count")
 async def get_updates_count():
     """Get the count of integrations with available updates."""
-    if not _get_active_remote_client() or not _github_client:
+    remote_id = get_active_remote_id()
+    if (
+        not _get_active_remote_client()
+        or not _github_client
+        or not is_remote_online(remote_id)
+    ):
         return "0"
 
     try:
-        integrations = await _get_installed_integrations(get_active_remote_id())
+        integrations = await _get_installed_integrations(remote_id)
         count = sum(
             1
             for i in integrations
@@ -1214,6 +1239,8 @@ async def get_integrations_list():
         return (
             "<div class='text-red-600 dark:text-red-400'>Service not initialized</div>"
         )
+    if not is_remote_online(get_active_remote_id()):
+        return _render_offline_partial()
 
     try:
         remote_id = get_active_remote_id()
@@ -1251,6 +1278,8 @@ async def get_integrations_list():
 @app.route("/api/integrations/available")
 async def get_available_list():
     """Get HTML partial with list of available integrations."""
+    if not is_remote_online(get_active_remote_id()):
+        return _render_offline_partial()
     try:
         available = await _get_available_integrations(get_active_remote_id())
         remote_ip = (
@@ -4479,10 +4508,12 @@ async def get_status():
     """Get current system status as JSON."""
     if not _get_active_remote_client():
         return jsonify({"error": "Service not initialized"})
+    if not is_remote_online(get_active_remote_id()):
+        return jsonify({"online": False})
 
     try:
         is_docked = await _get_active_remote_client().is_docked()  # ty:ignore[unresolved-attribute]
-        return jsonify({"docked": is_docked, "server": "running"})
+        return jsonify({"docked": is_docked, "server": "running", "online": True})
     except Exception as e:
         return jsonify({"error": str(e)})
 
@@ -4492,6 +4523,8 @@ async def get_status_html():
     """Get current system status as HTML badges."""
     if not _get_active_remote_client():
         return '<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-600 dark:bg-red-500/20 text-white dark:text-red-300">Not Connected</span>'
+    if not is_remote_online(get_active_remote_id()):
+        return '<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-700 dark:bg-yellow-500/20 text-white dark:text-yellow-300"><i class="fa-solid fa-plug-circle-xmark mr-1.5"></i>Remote Offline</span>'
 
     try:
         is_docked = await _get_active_remote_client().is_docked()  # ty:ignore[unresolved-attribute]
@@ -4688,25 +4721,17 @@ async def get_remotes_list():
     """Get list of all configured remotes with connection status."""
     active_id = get_active_remote_id()
 
-    async def _check(remote_id: str, config):
-        client = _remote_clients.get(remote_id)
-        connected = False
-        if client:
-            try:
-                connected = await client.test_connection()
-            except Exception:
-                pass
-        return {
-            "id": remote_id,
-            "name": config.name,
-            "address": config.address,
-            "active": remote_id == active_id,
-            "connected": connected,
-        }
-
-    remotes = await asyncio.gather(
-        *[_check(rid, cfg) for rid, cfg in _remote_configs.items()]
-    )
+    remotes = []
+    for remote_id, config in _remote_configs.items():
+        remotes.append(
+            {
+                "id": remote_id,
+                "name": config.name,
+                "address": config.address,
+                "active": remote_id == active_id,
+                "connected": is_remote_online(remote_id),
+            }
+        )
 
     return await render_template(
         "partials/remote_selector_dropdown.html", remotes=remotes
@@ -5166,7 +5191,7 @@ async def clear_logs():
 @app.route("/integration-logs")
 async def integration_logs_page():
     """Render the integration logs page."""
-    if not _get_active_remote_client():
+    if not _get_active_remote_client() or not is_remote_online(get_active_remote_id()):
         return await render_template(
             "integration_logs.html",
             services=[],
@@ -5236,7 +5261,7 @@ async def integration_logs_page():
 @app.route("/api/integration-logs/entries")
 async def get_integration_logs_entries():
     """Get integration log entries as HTML partial for HTMX."""
-    if not _get_active_remote_client():
+    if not _get_active_remote_client() or not is_remote_online(get_active_remote_id()):
         return await render_template(
             "partials/integration_log_entries.html", entries=[]
         )
@@ -5391,16 +5416,50 @@ async def inject_system_messages_count():
 
 @app.context_processor
 async def inject_orphaned_entities_count():
-    """Inject cached orphaned entities + IR codesets count into all templates.
+    """Inject orphaned entities + IR codesets count into all templates.
 
-    Reads from _orphan_count_cache populated by the periodic poll. Avoids
-    blocking page renders on remote API calls (which can timeout when the
-    remote is in standby).
+    Skipped entirely when the active remote is offline so page renders never
+    block on a remote that is in standby/unreachable.
+    """
+    client = _get_active_remote_client()
+    remote_id = get_active_remote_id()
+    if not client or not is_remote_online(remote_id):
+        return {"orphaned_entities_count": 0}
+
+    try:
+        orphaned_entities = await client.find_orphan_entities()
+        activity_ids = set()
+        for entity in orphaned_entities:
+            activity_id = entity.get("activity_id")
+            if activity_id:
+                activity_ids.add(activity_id)
+
+        orphaned_codesets = await find_orphaned_ir_codesets(client)
+
+        total_count = len(activity_ids) + len(orphaned_codesets)
+        return {"orphaned_entities_count": total_count}
+    except Exception as e:
+        _LOG.debug("Failed to get orphaned entities count: %s", e)
+        return {"orphaned_entities_count": 0}
+
+
+@app.context_processor
+async def inject_active_remote_status():
+    """Inject the active remote's online status into all templates.
+
+    Used to render an offline banner and to gate UI elements that depend on
+    a reachable remote.
     """
     remote_id = get_active_remote_id()
-    if not remote_id or remote_id not in _remote_clients:
-        return {"orphaned_entities_count": 0}
-    return {"orphaned_entities_count": _orphan_count_cache.get(remote_id, 0)}
+    return {
+        "active_remote_id": remote_id,
+        "active_remote_online": is_remote_online(remote_id),
+        "active_remote_name": (
+            _remote_configs[remote_id].name
+            if remote_id and remote_id in _remote_configs
+            else None
+        ),
+    }
 
 
 _SPONSOR_URL_TEMPLATES: dict[str, str] = {
@@ -5573,6 +5632,8 @@ async def get_orphaned_entities():
             "partials/orphaned_entities.html",
             orphaned_entities=[],
         )
+    if not is_remote_online(get_active_remote_id()):
+        return _render_offline_partial()
 
     try:
         orphaned_entities = await _get_active_remote_client().find_orphan_entities()  # ty:ignore[unresolved-attribute]
@@ -5705,6 +5766,8 @@ async def get_orphaned_ir_codesets():
             "partials/orphaned_ir_codesets.html",
             orphaned_codesets=[],
         )
+    if not is_remote_online(get_active_remote_id()):
+        return _render_offline_partial()
 
     try:
         orphaned_codesets = await find_orphaned_ir_codesets(client)
@@ -6269,7 +6332,6 @@ class WebServer:
         # Initialize remote clients and configs
         _remote_clients.clear()
         _remote_configs.clear()
-        _orphan_count_cache.clear()
         for config in remote_configs:
             _remote_configs[config.identifier] = config
             _remote_clients[config.identifier] = RemoteClient(
@@ -6382,7 +6444,6 @@ class WebServer:
         # Clear and rebuild remote clients and configs
         _remote_clients.clear()
         _remote_configs.clear()
-        _orphan_count_cache.clear()
 
         for config in remote_configs:
             _remote_configs[config.identifier] = config
@@ -6594,8 +6655,7 @@ class WebServer:
         Check for orphaned entities in activities and send notifications.
 
         This is called periodically to detect orphaned entities that may
-        prevent activities from functioning correctly. Also refreshes the
-        orphan count cache used by the UI badge.
+        prevent activities from functioning correctly.
 
         :param remote_id: Remote identifier to check orphaned entities for
         """
@@ -6611,47 +6671,46 @@ class WebServer:
                 len(orphaned_entities) if orphaned_entities else 0,
             )
 
-            activities: dict = {}
-            for entity in orphaned_entities or []:
-                activity_id = entity.get("activity_id")
-                if not activity_id:
-                    continue
-                if activity_id not in activities:
-                    activity_name = entity.get("activity_name", {})
-                    activities[activity_id] = _get_localized_name(
-                        activity_name, "Unknown Activity"
+            if orphaned_entities:
+                activities = {}
+                for entity in orphaned_entities:
+                    activity_id = entity.get("activity_id")
+                    if not activity_id:
+                        continue
+
+                    if activity_id not in activities:
+                        activity_name = entity.get("activity_name", {})
+                        name = _get_localized_name(activity_name, "Unknown Activity")
+                        activities[activity_id] = name
+
+                if activities:
+                    activity_names = list(activities.values())
+                    activity_ids = list(activities.keys())
+
+                    _LOG.info(
+                        "[%s] Found %d activities with orphaned entities: %s",
+                        remote_id,
+                        len(activity_names),
+                        ", ".join(activity_names),
                     )
 
-            try:
-                orphaned_codesets = await find_orphaned_ir_codesets(client)
-            except Exception as e:
-                _LOG.debug("[%s] Failed to fetch IR codesets for cache: %s", remote_id, e)
-                orphaned_codesets = []
-            _orphan_count_cache[remote_id] = len(activities) + len(orphaned_codesets)
-
-            if activities:
-                activity_names = list(activities.values())
-                activity_ids = list(activities.keys())
-
-                _LOG.info(
-                    "[%s] Found %d activities with orphaned entities: %s",
-                    remote_id,
-                    len(activity_names),
-                    ", ".join(activity_names),
-                )
-
-                # Send notification (per-remote)
-                notification_manager = get_notification_manager(remote_id)
-                await notification_manager.notify_orphaned_entities(
-                    activity_names,
-                    activity_ids,
-                )
-                _LOG.debug("[%s] Orphaned entities notification sent", remote_id)
-            else:
-                if orphaned_entities:
-                    _LOG.debug("[%s] No activities with orphaned entities", remote_id)
+                    # Send notification (per-remote)
+                    notification_manager = get_notification_manager(remote_id)
+                    await notification_manager.notify_orphaned_entities(
+                        activity_names,
+                        activity_ids,
+                    )
+                    _LOG.debug("[%s] Orphaned entities notification sent", remote_id)
                 else:
-                    _LOG.debug("[%s] No orphaned entities detected", remote_id)
+                    _LOG.debug("[%s] No activities with orphaned entities", remote_id)
+                    # Clear any previously notified activities if they're now resolved
+                    notification_manager = get_notification_manager(remote_id)
+                    if notification_manager._notified_orphaned_activities:
+                        notification_manager.clear_orphaned_activities(
+                            list(notification_manager._notified_orphaned_activities)
+                        )
+            else:
+                _LOG.debug("[%s] No orphaned entities detected", remote_id)
                 # Clear any previously notified activities
                 notification_manager = get_notification_manager(remote_id)
                 if notification_manager._notified_orphaned_activities:
@@ -6661,12 +6720,10 @@ class WebServer:
 
         except SyncAPIError as e:
             _LOG.warning("[%s] Failed to check for orphaned entities: %s", remote_id, e)
-            _orphan_count_cache.pop(remote_id, None)
         except Exception as e:
             _LOG.error(
                 "[%s] Unexpected error checking orphaned entities: %s", remote_id, e
             )
-            _orphan_count_cache.pop(remote_id, None)
 
     async def check_orphaned_entities_async(self, remote_id: str) -> None:
         """

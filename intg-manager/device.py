@@ -35,11 +35,21 @@ _LOG = logging.getLogger(__name__)
 _all_remote_configs: list[RemoteConfig] = []
 _web_server_instance: WebServer | None = None
 
+_remote_online: dict[str, bool] = {}
+
 
 def register_remote_config(config: RemoteConfig) -> None:
     """Register a remote config for multi-remote support."""
     if config not in _all_remote_configs:
         _all_remote_configs.append(config)
+    _remote_online.setdefault(config.identifier, False)
+
+
+def is_remote_online(remote_id: str | None) -> bool:
+    """Return True if the named remote is currently considered online."""
+    if not remote_id:
+        return False
+    return _remote_online.get(remote_id, False)
 
 
 class IntegrationManagerDevice(PollingDevice):
@@ -246,6 +256,7 @@ class IntegrationManagerDevice(PollingDevice):
             # Test connection
             if await self._client.test_connection():
                 self._connected = True
+                _remote_online[self.identifier] = True
                 _LOG.info("[%s] Connected to remote", self.log_id)
 
                 # Check if we're running in external mode
@@ -310,11 +321,13 @@ class IntegrationManagerDevice(PollingDevice):
         except RemoteAPIError as e:
             _LOG.error("[%s] Failed to connect: %s", self.log_id, e)
             self._connected = False
+            _remote_online[self.identifier] = False
             raise
 
     async def disconnect(self) -> None:
         """Disconnect from the remote."""
         _LOG.debug("[%s] Disconnecting from remote", self.log_id)
+        _remote_online[self.identifier] = False
 
         # Only stop web server if:
         # 1. We're running on the remote (not Docker), AND
@@ -349,13 +362,16 @@ class IntegrationManagerDevice(PollingDevice):
         try:
             if await self._client.test_connection():
                 self._connected = True
+                _remote_online[self.identifier] = True
                 _LOG.debug("[%s] Connection verified", self.log_id)
             else:
                 self._connected = False
+                _remote_online[self.identifier] = False
                 _LOG.warning("[%s] Connection verification failed", self.log_id)
         except RemoteAPIError as err:
             _LOG.error("[%s] Connection verification failed: %s", self.log_id, err)
             self._connected = False
+            _remote_online[self.identifier] = False
             raise
 
     # =========================================================================
