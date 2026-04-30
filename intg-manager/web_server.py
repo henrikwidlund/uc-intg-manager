@@ -185,7 +185,7 @@ def _render_offline_partial() -> str:
     return (
         "<div class='p-6 text-center text-gray-500 dark:text-gray-400'>"
         "<i class='fa-solid fa-plug-circle-xmark mr-2'></i>"
-        "Remote is offline. Data will load when the remote comes back online."
+        "Remote is offline. When it comes back online, refresh the page to load data."
         "</div>"
     )
 
