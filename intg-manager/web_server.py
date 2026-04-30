@@ -174,7 +174,8 @@ def is_remote_online(remote_id: str | None) -> bool:
         return False
     try:
         from device import is_remote_online as _device_is_remote_online
-    except ImportError:
+    except ImportError as e:
+        _LOG.error("Failed to import is_remote_online from device module: %s", e)
         return False
     return _device_is_remote_online(remote_id)
 
@@ -1278,10 +1279,11 @@ async def get_integrations_list():
 @app.route("/api/integrations/available")
 async def get_available_list():
     """Get HTML partial with list of available integrations."""
-    if not is_remote_online(get_active_remote_id()):
+    remote_id = get_active_remote_id()
+    if remote_id and not is_remote_online(remote_id):
         return _render_offline_partial()
     try:
-        available = await _get_available_integrations(get_active_remote_id())
+        available = await _get_available_integrations(remote_id)
         remote_ip = (
             _get_active_remote_client()._address  # ty:ignore[unresolved-attribute]
             if _get_active_remote_client()
@@ -4507,15 +4509,24 @@ async def get_versions():
 async def get_status():
     """Get current system status as JSON."""
     if not _get_active_remote_client():
-        return jsonify({"error": "Service not initialized"})
+        return jsonify(
+            {
+                "online": False,
+                "docked": None,
+                "server": None,
+                "error": "Service not initialized",
+            }
+        )
     if not is_remote_online(get_active_remote_id()):
-        return jsonify({"online": False})
+        return jsonify({"online": False, "docked": None, "server": None})
 
     try:
         is_docked = await _get_active_remote_client().is_docked()  # ty:ignore[unresolved-attribute]
-        return jsonify({"docked": is_docked, "server": "running", "online": True})
+        return jsonify({"online": True, "docked": is_docked, "server": "running"})
     except Exception as e:
-        return jsonify({"error": str(e)})
+        return jsonify(
+            {"online": False, "docked": None, "server": None, "error": str(e)}
+        )
 
 
 @app.route("/api/status/html")
