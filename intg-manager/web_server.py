@@ -116,6 +116,10 @@ app.config["PERMANENT_SESSION_LIFETIME"] = 7776000  # 90 days
 _remote_clients: dict[str, RemoteClient] = {}
 _remote_configs: dict[str, RemoteConfig] = {}
 
+# Cached orphan count per remote (activities with orphaned entities + orphaned IR codesets).
+# Populated by periodic background polling so template renders never block on remote API calls.
+_orphan_count_cache: dict[str, int] = {}
+
 # GitHub client (shared across all remotes)
 _github_client: GitHubClient | None = None
 # Sync-only GitHub client for fetch_repository_batch (runs in thread, no event loop)
@@ -5387,28 +5391,16 @@ async def inject_system_messages_count():
 
 @app.context_processor
 async def inject_orphaned_entities_count():
-    """Inject orphaned entities and IR codesets count into all templates."""
-    client = _get_active_remote_client()
-    if not client:
+    """Inject cached orphaned entities + IR codesets count into all templates.
+
+    Reads from _orphan_count_cache populated by the periodic poll. Avoids
+    blocking page renders on remote API calls (which can timeout when the
+    remote is in standby).
+    """
+    remote_id = get_active_remote_id()
+    if not remote_id or remote_id not in _remote_clients:
         return {"orphaned_entities_count": 0}
-
-    try:
-        # Count orphaned entities by activity
-        orphaned_entities = await client.find_orphan_entities()
-        activity_ids = set()
-        for entity in orphaned_entities:
-            activity_id = entity.get("activity_id")
-            if activity_id:
-                activity_ids.add(activity_id)
-
-        orphaned_codesets = await find_orphaned_ir_codesets(client)
-
-        # Total count is activities + IR codesets
-        total_count = len(activity_ids) + len(orphaned_codesets)
-        return {"orphaned_entities_count": total_count}
-    except Exception as e:
-        _LOG.debug("Failed to get orphaned entities count: %s", e)
-        return {"orphaned_entities_count": 0}
+    return {"orphaned_entities_count": _orphan_count_cache.get(remote_id, 0)}
 
 
 _SPONSOR_URL_TEMPLATES: dict[str, str] = {
@@ -6277,6 +6269,7 @@ class WebServer:
         # Initialize remote clients and configs
         _remote_clients.clear()
         _remote_configs.clear()
+        _orphan_count_cache.clear()
         for config in remote_configs:
             _remote_configs[config.identifier] = config
             _remote_clients[config.identifier] = RemoteClient(
@@ -6389,6 +6382,7 @@ class WebServer:
         # Clear and rebuild remote clients and configs
         _remote_clients.clear()
         _remote_configs.clear()
+        _orphan_count_cache.clear()
 
         for config in remote_configs:
             _remote_configs[config.identifier] = config
@@ -6600,7 +6594,8 @@ class WebServer:
         Check for orphaned entities in activities and send notifications.
 
         This is called periodically to detect orphaned entities that may
-        prevent activities from functioning correctly.
+        prevent activities from functioning correctly. Also refreshes the
+        orphan count cache used by the UI badge.
 
         :param remote_id: Remote identifier to check orphaned entities for
         """
@@ -6616,47 +6611,47 @@ class WebServer:
                 len(orphaned_entities) if orphaned_entities else 0,
             )
 
-            if orphaned_entities:
-                # Group by activity to get unique activities with orphaned entities
-                activities = {}
-                for entity in orphaned_entities:
-                    activity_id = entity.get("activity_id")
-                    if not activity_id:
-                        continue
-
-                    if activity_id not in activities:
-                        activity_name = entity.get("activity_name", {})
-                        name = _get_localized_name(activity_name, "Unknown Activity")
-                        activities[activity_id] = name
-
-                if activities:
-                    activity_names = list(activities.values())
-                    activity_ids = list(activities.keys())
-
-                    _LOG.info(
-                        "[%s] Found %d activities with orphaned entities: %s",
-                        remote_id,
-                        len(activity_names),
-                        ", ".join(activity_names),
+            activities: dict = {}
+            for entity in orphaned_entities or []:
+                activity_id = entity.get("activity_id")
+                if not activity_id:
+                    continue
+                if activity_id not in activities:
+                    activity_name = entity.get("activity_name", {})
+                    activities[activity_id] = _get_localized_name(
+                        activity_name, "Unknown Activity"
                     )
 
-                    # Send notification (per-remote)
-                    notification_manager = get_notification_manager(remote_id)
-                    await notification_manager.notify_orphaned_entities(
-                        activity_names,
-                        activity_ids,
-                    )
-                    _LOG.debug("[%s] Orphaned entities notification sent", remote_id)
-                else:
-                    _LOG.debug("[%s] No activities with orphaned entities", remote_id)
-                    # Clear any previously notified activities if they're now resolved
-                    notification_manager = get_notification_manager(remote_id)
-                    if notification_manager._notified_orphaned_activities:
-                        notification_manager.clear_orphaned_activities(
-                            list(notification_manager._notified_orphaned_activities)
-                        )
+            try:
+                orphaned_codesets = await find_orphaned_ir_codesets(client)
+            except Exception as e:
+                _LOG.debug("[%s] Failed to fetch IR codesets for cache: %s", remote_id, e)
+                orphaned_codesets = []
+            _orphan_count_cache[remote_id] = len(activities) + len(orphaned_codesets)
+
+            if activities:
+                activity_names = list(activities.values())
+                activity_ids = list(activities.keys())
+
+                _LOG.info(
+                    "[%s] Found %d activities with orphaned entities: %s",
+                    remote_id,
+                    len(activity_names),
+                    ", ".join(activity_names),
+                )
+
+                # Send notification (per-remote)
+                notification_manager = get_notification_manager(remote_id)
+                await notification_manager.notify_orphaned_entities(
+                    activity_names,
+                    activity_ids,
+                )
+                _LOG.debug("[%s] Orphaned entities notification sent", remote_id)
             else:
-                _LOG.debug("[%s] No orphaned entities detected", remote_id)
+                if orphaned_entities:
+                    _LOG.debug("[%s] No activities with orphaned entities", remote_id)
+                else:
+                    _LOG.debug("[%s] No orphaned entities detected", remote_id)
                 # Clear any previously notified activities
                 notification_manager = get_notification_manager(remote_id)
                 if notification_manager._notified_orphaned_activities:
@@ -6666,10 +6661,12 @@ class WebServer:
 
         except SyncAPIError as e:
             _LOG.warning("[%s] Failed to check for orphaned entities: %s", remote_id, e)
+            _orphan_count_cache.pop(remote_id, None)
         except Exception as e:
             _LOG.error(
                 "[%s] Unexpected error checking orphaned entities: %s", remote_id, e
             )
+            _orphan_count_cache.pop(remote_id, None)
 
     async def check_orphaned_entities_async(self, remote_id: str) -> None:
         """
