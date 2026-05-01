@@ -14,8 +14,34 @@ from typing import Any
 
 import aiohttp
 import certifi
+from packaging.version import InvalidVersion, Version
 
 from const import GITHUB_API_BASE
+
+_PRE_RELEASE_PATTERN = re.compile(
+    r"[-._]?(alpha|beta|preview|pre|rc|dev|a|b)\.?(\d*)",
+    re.IGNORECASE,
+)
+
+
+def normalize_version(version: str) -> str:
+    """Normalize a GitHub-style tag (e.g. ``v0.0.1-pre01``) to PEP 440."""
+    if not version:
+        return version
+    s = version.lstrip("vV").split("+", 1)[0]
+
+    def _repl(match: re.Match[str]) -> str:
+        kind = match.group(1).lower()
+        num = int(match.group(2)) if match.group(2) else 0
+        if kind in ("alpha", "a"):
+            return f"a{num}"
+        if kind in ("beta", "b"):
+            return f"b{num}"
+        if kind == "dev":
+            return f".dev{num}"
+        return f"rc{num}"
+
+    return _PRE_RELEASE_PATTERN.sub(_repl, s)
 
 _LOG = logging.getLogger(__name__)
 
@@ -132,38 +158,23 @@ class GitHubClient:
             return None
 
     @staticmethod
-    def parse_version(version_str: str) -> tuple[int, ...]:
-        """
-        Parse a version string into a comparable tuple.
-
-        :param version_str: Version string (e.g., "v1.2.3", "1.2.3")
-        :return: Tuple of version numbers
-        """
-        # Remove 'v' prefix if present
-        version_str = version_str.lstrip("vV")
-
-        # Extract numeric parts
-        parts = re.findall(r"\d+", version_str)
-        return tuple(int(p) for p in parts) if parts else (0,)
-
-    @staticmethod
     def is_newer_version(current: str, latest: str) -> bool:
         """
         Check if the latest version is newer than the current version.
+
+        Pre-release tags (``-pre``, ``-alpha``, ``-beta``, ``-rc``, ``-dev``)
+        rank lower than the matching release per PEP 440 / SemVer.
 
         :param current: Current installed version
         :param latest: Latest available version
         :return: True if latest is newer than current
         """
-        current_parts = GitHubClient.parse_version(current)
-        latest_parts = GitHubClient.parse_version(latest)
-
-        # Pad shorter tuple with zeros
-        max_len = max(len(current_parts), len(latest_parts))
-        current_padded = current_parts + (0,) * (max_len - len(current_parts))
-        latest_padded = latest_parts + (0,) * (max_len - len(latest_parts))
-
-        return latest_padded > current_padded
+        try:
+            return Version(normalize_version(latest)) > Version(
+                normalize_version(current)
+            )
+        except (InvalidVersion, TypeError, AttributeError):
+            return False
 
     async def get_latest_version(self, home_page: str) -> str | None:
         """
