@@ -1,5 +1,5 @@
 <!-- Single Integration Card Partial -->
-<div id="card-{{ integration.driver_id }}" class="integration-card relative bg-uc-light-card dark:bg-uc-darker rounded-xl p-3 sm:p-5 border border-uc-light-border dark:border-uc-border {% if not integration.official %}hover:border-uc-primary/50{% endif %}"
+<div id="card-{{ integration.driver_id }}" class="integration-card relative bg-uc-light-card {{ card_dark_bg|default('dark:bg-uc-card') }} rounded-xl p-3 sm:p-5 border border-uc-light-border dark:border-uc-border {% if not integration.official %}hover:border-uc-primary/50{% endif %}"
      data-name="{{ integration.name }}"
      data-description="{{ integration.description }}"
      data-developer="{{ integration.developer }}"
@@ -43,8 +43,14 @@
                     </a>
                     {% endif %}
                     {% if integration.developer %}
+                    {% set _dev = sponsors.get(integration.developer) %}
                     <span>•</span>
+                    {% if _dev and _dev.homepage %}
+                    <a href="{{ _dev.homepage }}" target="_blank" rel="noopener noreferrer"
+                       class="hover:text-gray-700 dark:hover:text-gray-300 transition-colors">{{ integration.developer }}</a>
+                    {% else %}
                     <span>{{ integration.developer }}</span>
+                    {% endif %}
                     {% endif %}
                     {% if integration.configured_entities > 0 %}
                     <span>•</span>
@@ -122,13 +128,13 @@
             <!-- Action buttons and version upgrade -->
             <div class="flex items-center gap-2">
             <!-- Sponsor button -->
-            {% if integration.custom and sponsors.get(integration.developer) %}
+            {% if sponsors.get(integration.developer) %}
             {% set _spo = sponsors.get(integration.developer) %}
             <div class="group relative">
-                <button class="p-1.5 text-pink-500 dark:text-pink-400 hover:bg-uc-card rounded-lg transition-colors" title="Support {{ integration.developer }}">
+                <button class="p-1.5 text-pink-500 dark:text-pink-400 hover:bg-uc-card rounded-lg transition-colors">
                     <i class="fa-solid fa-heart h-4 w-4"></i>
                 </button>
-                <div class="absolute left-0 bottom-full mb-1.5 hidden group-hover:block z-[9999]">
+                <div class="absolute left-0 bottom-full pb-2 hidden group-hover:block z-[9999]">
                     <div class="bg-white dark:bg-uc-card border border-gray-200 dark:border-uc-border rounded-lg shadow-xl overflow-hidden min-w-max">
                         <div class="px-3 py-1.5 bg-gray-50 dark:bg-uc-darker border-b border-gray-200 dark:border-uc-border">
                             <p class="text-xs font-semibold text-gray-500 dark:text-gray-400">Support {{ integration.developer }}</p>
@@ -359,13 +365,13 @@
         
         <div class="flex items-center gap-2">
             <!-- Sponsor button -->
-            {% if integration.custom and sponsors.get(integration.developer) %}
+            {% if sponsors.get(integration.developer) %}
             {% set _spo = sponsors.get(integration.developer) %}
             <div class="group relative">
-                <button class="p-1.5 text-pink-500 dark:text-pink-400 hover:bg-uc-card rounded-lg transition-colors" title="Support {{ integration.developer }}">
+                <button class="p-1.5 text-pink-500 dark:text-pink-400 hover:bg-uc-card rounded-lg transition-colors">
                     <i class="fa-solid fa-heart h-4 w-4"></i>
                 </button>
-                <div class="absolute left-0 bottom-full mb-1.5 hidden group-hover:block z-[9999]">
+                <div class="absolute left-0 bottom-full pb-2 hidden group-hover:block z-[9999]">
                     <div class="bg-white dark:bg-uc-card border border-gray-200 dark:border-uc-border rounded-lg shadow-xl overflow-hidden min-w-max">
                         <div class="px-3 py-1.5 bg-gray-50 dark:bg-uc-darker border-b border-gray-200 dark:border-uc-border">
                             <p class="text-xs font-semibold text-gray-500 dark:text-gray-400">Support {{ integration.developer }}</p>
@@ -666,13 +672,13 @@
     <!-- Upgrade overlay - always present so HTMX can find it during requests -->
     <div id="upgrade-overlay-{{ integration.driver_id }}" 
          data-current-version="{{ integration.version }}"
-         class="hidden absolute inset-0 bg-gray-900/90 dark:bg-uc-darker/90 rounded-xl z-10 pointer-events-none">
+         class="hidden absolute inset-0 bg-gray-200/90 dark:bg-uc-darker/90 rounded-xl z-10 pointer-events-none">
         <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center">
             <svg class="animate-spin h-8 w-8 text-yellow-400 mb-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
             </svg>
-            <span class="text-sm text-gray-200 dark:text-gray-300 upgrade-text">Upgrading...</span>
+            <span class="text-sm text-gray-700 dark:text-gray-300 upgrade-text">Upgrading...</span>
         </div>
     </div>
     

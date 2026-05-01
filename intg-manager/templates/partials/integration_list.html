@@ -4,7 +4,9 @@
 {% if integrations %}
 <div class="grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-4">
     {% for integration in integrations %}
+    {% with card_dark_bg = 'dark:bg-uc-darker' if dashboard else 'dark:bg-uc-card' %}
     {% include 'partials/integration_card.html' %}
+    {% endwith %}
     {% endfor %}
 </div>
 

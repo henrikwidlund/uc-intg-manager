@@ -16,6 +16,7 @@ import logging
 import os
 import sys
 import threading
+from urllib.parse import urlparse
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -565,7 +566,9 @@ async def _get_installed_integrations(
         driver_id = instance.get("driver_id", "")
         driver = driver_lookup.get(driver_id, {})
 
-        developer = driver.get("developer", {}).get("name", "")
+        developer = driver.get("developer", {}).get("name", "") or driver.get(
+            "developer_name", ""
+        )
         home_page = driver.get("developer", {}).get("url", "")
         driver_type = driver.get("driver_type", "CUSTOM")
         driver_name = (
@@ -696,7 +699,9 @@ async def _get_installed_integrations(
         if driver_type == "LOCAL":
             continue
 
-        developer = driver.get("developer", {}).get("name", "")
+        developer = driver.get("developer", {}).get("name", "") or driver.get(
+            "developer_name", ""
+        )
         home_page = driver.get("developer", {}).get("url", "")
         driver_name = driver.get("name", {}).get("en", driver_id)
 
@@ -955,7 +960,8 @@ async def _get_available_integrations(
         if actual_driver_id and actual_driver_id in _cached_version_data:
             downloads = _cached_version_data[actual_driver_id].get("downloads", 0)
 
-        categories_list = item.get("categories", [])
+        _cat_map = _get_category_name_map()
+        categories_list = [_cat_map.get(c, c) for c in item.get("categories", [])]
         avail = AvailableIntegration(
             driver_id=actual_driver_id if actual_driver_id else driver_id,
             name=name,
@@ -1178,11 +1184,16 @@ async def get_integrations_list():
             if _get_active_remote_client()
             else None
         )
+        current_url = request.headers.get("HX-Current-URL", "")
+
+        parsed_path = urlparse(current_url).path.rstrip("/")
+        dashboard = parsed_path in ("", "/")
         return await render_template(
             "partials/integration_list.html",
             integrations=integrations,
             remote_ip=remote_ip,
             settings=settings,
+            dashboard=dashboard,
         )
     except Exception as e:
         _LOG.error("Failed to get integrations: %s", e)
@@ -2821,7 +2832,10 @@ async def update_driver(driver_id: str):
                 registry_item = next(
                     (item for item in registry if item.get("id") == driver_id), {}
                 )
-                categories_list = registry_item.get("categories", [])
+                _cat_map = _get_category_name_map()
+                categories_list = [
+                    _cat_map.get(c, c) for c in registry_item.get("categories", [])
+                ]
                 fallback_integration = AvailableIntegration(
                     driver_id=driver_id,
                     name=registry_item.get("name", driver_id),
@@ -3145,7 +3159,8 @@ async def _build_error_card(driver_id: str, registry: list, error_msg: str) -> s
     registry_item = next((item for item in registry if item.get("id") == driver_id), {})
 
     # Convert registry item to AvailableIntegration structure
-    categories_list = registry_item.get("categories", [])
+    _cat_map = _get_category_name_map()
+    categories_list = [_cat_map.get(c, c) for c in registry_item.get("categories", [])]
     integration = AvailableIntegration(
         driver_id=driver_id,
         name=registry_item.get("name", driver_id),
@@ -3337,7 +3352,10 @@ async def install_integration(driver_id: str):
             _LOG.info("Lock released after successful install of %s", driver_id)
 
         # Return a replacement card HTML for HTMX outerHTML swap
-        categories_list = integration.get("categories", [])
+        _cat_map = _get_category_name_map()
+        categories_list = [
+            _cat_map.get(c, c) for c in integration.get("categories", [])
+        ]
         integration_obj = AvailableIntegration(
             driver_id=driver_id,
             name=integration.get("name", driver_id),
@@ -4641,28 +4659,26 @@ async def set_active_remote():
 async def get_remotes_list():
     """Get list of all configured remotes with connection status."""
     active_id = get_active_remote_id()
-    remotes = []
 
-    for remote_id, config in _remote_configs.items():
+    async def _check(remote_id: str, config):
         client = _remote_clients.get(remote_id)
-
-        # Test connection
         connected = False
         if client:
             try:
                 connected = await client.test_connection()
             except Exception:
                 pass
+        return {
+            "id": remote_id,
+            "name": config.name,
+            "address": config.address,
+            "active": remote_id == active_id,
+            "connected": connected,
+        }
 
-        remotes.append(
-            {
-                "id": remote_id,
-                "name": config.name,
-                "address": config.address,
-                "active": remote_id == active_id,
-                "connected": connected,
-            }
-        )
+    remotes = await asyncio.gather(
+        *[_check(rid, cfg) for rid, cfg in _remote_configs.items()]
+    )
 
     return await render_template(
         "partials/remote_selector_dropdown.html", remotes=remotes
@@ -5383,26 +5399,45 @@ _SPONSOR_URL_TEMPLATES: dict[str, str] = {
 
 
 def _get_sponsors() -> dict[str, dict]:
-    """Load and normalise sponsors from registry.json, keyed by developer name."""
+    """Load and normalise developers from registry.json, keyed by developer name."""
     try:
         data = load_registry_data()
-        sponsors_list = data.get("sponsors", []) if isinstance(data, dict) else []
+        developers_list = data.get("developers", []) if isinstance(data, dict) else []
         result: dict[str, dict] = {}
-        for sponsor in sponsors_list:
-            name = sponsor.get("name", "")
+        for developer in developers_list:
+            name = developer.get("name", "")
             if not name:
                 continue
             links: dict[str, str] = {}
-            for platform, value in sponsor.get("links", {}).items():
+            for platform, value in developer.get("sponsorship_links", {}).items():
                 if value.startswith("http"):
                     links[platform] = value
                 elif platform in _SPONSOR_URL_TEMPLATES:
                     links[platform] = _SPONSOR_URL_TEMPLATES[platform].format(value)
-            result[name] = {"description": sponsor.get("description", ""), "links": links}
+            result[name] = {
+                "description": developer.get("description", ""),
+                "homepage": developer.get("homepage", ""),
+                "links": links,
+            }
         return result
     except Exception as e:
-        _LOG.debug("Failed to load sponsors: %s", e)
+        _LOG.debug("Failed to load developers: %s", e)
         return {}
+
+
+def _get_category_name_map() -> dict[str, str]:
+    """Build id → display name lookup from registry categories."""
+    try:
+        data = load_registry_data()
+        if isinstance(data, dict):
+            return {
+                c["id"]: c["name"]
+                for c in data.get("categories", [])
+                if "id" in c and "name" in c
+            }
+    except Exception:
+        pass
+    return {}
 
 
 @app.context_processor
@@ -5569,6 +5604,69 @@ async def get_orphaned_entities():
     except SyncAPIError as e:
         _LOG.error("Failed to fetch orphaned entities: %s", e)
         # Return error message
+        return f"""
+        <div class="bg-red-50 dark:bg-red-900/20 border border-red-400 dark:border-red-500/30 rounded-lg p-6">
+            <div class="flex items-start gap-3">
+                <i class="fa-solid fa-triangle-exclamation text-red-600 dark:text-red-400 text-xl"></i>
+                <div>
+                    <h3 class="text-gray-900 dark:text-white font-medium mb-1">Error Loading Diagnostics</h3>
+                    <p class="text-sm text-gray-700 dark:text-gray-300">{e}</p>
+                </div>
+            </div>
+        </div>
+        """
+
+
+@app.route("/api/diagnostics/unused-activity-entities")
+async def get_unused_activity_entities():
+    """Get unused activity entities data as HTML partial for HTMX."""
+    if not _get_active_remote_client():
+        return await render_template(
+            "partials/unused_activity_entities.html",
+            activities={},
+        )
+
+    try:
+        unused = await _get_active_remote_client().find_unused_entities()
+        _LOG.debug("Unused activity entities data: %s", unused)
+
+        # Group by activity for display
+        activities = {}
+        for entity in unused:
+            activity_id = entity.get("activity_id")
+            if not activity_id:
+                continue
+            if activity_id not in activities:
+                activity_name = entity.get("activity_name", {})
+                activities[activity_id] = {
+                    "name": _get_localized_name(activity_name, "Unknown Activity"),
+                    "entities": [],
+                }
+            entity_copy = entity.copy()
+            entity_copy["localized_name"] = _get_localized_name(
+                entity.get("name"), "Unknown Entity"
+            )
+            integration = entity.get("integration")
+            if integration and isinstance(integration, dict):
+                integration_copy = integration.copy()
+                integration_copy["localized_name"] = _get_localized_name(
+                    integration.get("name"), "Unknown Integration"
+                )
+                entity_copy["integration"] = integration_copy
+            activities[activity_id]["entities"].append(entity_copy)
+
+        remote_ip = (
+            _get_active_remote_client()._address
+            if _get_active_remote_client()
+            else None
+        )
+        return await render_template(
+            "partials/unused_activity_entities.html",
+            activities=activities,
+            remote_ip=remote_ip,
+        )
+    except SyncAPIError as e:
+        _LOG.error("Failed to fetch unused activity entities: %s", e)
         return f"""
         <div class="bg-red-50 dark:bg-red-900/20 border border-red-400 dark:border-red-500/30 rounded-lg p-6">
             <div class="flex items-start gap-3">

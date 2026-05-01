@@ -209,11 +209,11 @@ class IntegrationService:
                 "en", description.get(list(description.keys())[0], "")
             )
 
-        # Extract developer
+        # Extract developer — API may return nested {"developer": {"name": ...}} or flat "developer_name"
         developer_info = driver.get("developer", {})
         developer = (
             developer_info.get("name", "") if isinstance(developer_info, dict) else ""
-        )
+        ) or driver.get("developer_name", "")
 
         info = IntegrationInfo(
             instance_id=instance.get("integration_id", ""),

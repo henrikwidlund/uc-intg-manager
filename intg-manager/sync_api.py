@@ -27,6 +27,7 @@ from const import (
 )
 from packaging.version import InvalidVersion, Version
 from ucapi_framework import find_orphaned_entities
+from ucapi_framework.helpers import find_unused_activity_entities
 
 _LOG = logging.getLogger(__name__)
 
@@ -38,6 +39,11 @@ CONNECT_TIMEOUT = aiohttp.ClientTimeout(connect=2, total=7)
 DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(connect=30, total=330)
 # Sync timeout tuple kept for requests-based uses (fetch_repository_batch)
 _SYNC_REQUEST_TIMEOUT = (10, 30)
+
+# In-memory registry cache to avoid blocking the event loop on every request
+_registry_cache: dict[str, Any] | list | None = None
+_registry_cache_time: float = 0.0
+_REGISTRY_CACHE_TTL = 1800  # 30 minutes
 
 
 class SyncAPIError(Exception):
@@ -270,6 +276,20 @@ class RemoteClient:
         except Exception as e:
             _LOG.error("Failed to get orphan entities: %s", e)
             raise SyncAPIError(f"Failed to get orphan entities: {e}") from e
+
+    async def find_unused_entities(self) -> list[dict[str, Any]]:
+        """Find entities included in activities but never actually used."""
+        try:
+            remote_url = f"http://{self._address}:{self._port}"
+            result = await find_unused_activity_entities(
+                remote_url=remote_url,
+                api_key=self._api_key,
+            )
+            _LOG.debug("Found %d unused activity entities", len(result))
+            return result if isinstance(result, list) else []
+        except Exception as e:
+            _LOG.error("Failed to get unused activity entities: %s", e)
+            raise SyncAPIError(f"Failed to get unused activity entities: {e}") from e
 
     async def get_ir_remotes(
         self, page: int = 1, limit: int = 100
@@ -955,21 +975,40 @@ def load_registry() -> list[dict[str, Any]]:
 
 def load_registry_data() -> dict[str, Any] | list:
     """Load the full registry payload (integrations + sponsors + any future keys)."""
-    try:
-        if os.path.exists(KNOWN_INTEGRATIONS_URL):
+    global _registry_cache, _registry_cache_time
+
+    # Local file override: always read fresh (dev/testing workflow)
+    if os.path.exists(KNOWN_INTEGRATIONS_URL):
+        try:
             with open(KNOWN_INTEGRATIONS_URL, "r", encoding="utf-8") as f:
                 return json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            _LOG.warning("Failed to load local registry file: %s", e)
+            return {}
+
+    # Return in-memory cache if still fresh
+    now = datetime.now().timestamp()
+    if (
+        _registry_cache is not None
+        and (now - _registry_cache_time) < _REGISTRY_CACHE_TTL
+    ):
+        return _registry_cache
+
+    # Fetch from remote and populate cache
+    try:
         response = requests.get(
             KNOWN_INTEGRATIONS_URL,
             timeout=_SYNC_REQUEST_TIMEOUT,
             verify=certifi.where(),
         )
         if response.status_code == 200:
-            return response.json()
-        return {}
+            _registry_cache = response.json()
+            _registry_cache_time = now
+            return _registry_cache
+        return _registry_cache if _registry_cache is not None else {}
     except (requests.RequestException, OSError, json.JSONDecodeError) as e:
         _LOG.warning("Failed to load registry: %s", e)
-        return {}
+        return _registry_cache if _registry_cache is not None else {}
 
 
 def migrate_to_multi_remote(default_remote_id: str, default_remote_name: str) -> bool:

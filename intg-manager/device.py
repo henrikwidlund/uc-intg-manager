@@ -557,6 +557,8 @@ class IntegrationManagerDevice(PollingDevice):
 
     async def _on_undocked(self) -> None:
         """Handle remote being undocked/unplugged - conditionally stop web server."""
+        global _web_server_instance
+
         # In Docker mode, this should never be called, but add safety check
         if self._is_external:
             _LOG.debug(
@@ -581,6 +583,9 @@ class IntegrationManagerDevice(PollingDevice):
         if self._is_owner() and self._web_server and self._web_server.is_running:
             self._web_server.stop()
             _LOG.info("[%s] Web server stopped", self.log_id)
+            # Clear references so _on_docked() creates a fresh server on reconnect
+            self._web_server = None
+            _web_server_instance = None
 
     async def _check_integration_versions(self) -> None:
         """
