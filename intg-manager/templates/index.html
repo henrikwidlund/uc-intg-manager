@@ -55,7 +55,7 @@
     <div class="bg-transparent dark:bg-uc-card rounded-xl border border-uc-light-border dark:border-uc-border">
         <div class="p-4 sm:p-6 border-b border-uc-light-border dark:border-uc-border flex items-center justify-between bg-uc-light-card dark:bg-transparent rounded-t-xl">
             <h3 class="text-base sm:text-lg font-semibold text-gray-900 dark:text-white">Your Integrations</h3>
-            <a href="/integrations" class="text-sm text-uc-accent hover:text-white transition-colors">
+            <a href="/integrations" class="text-sm text-uc-accent hover:text-uc-accent transition-colors">
                 View all →
             </a>
         </div>
@@ -72,7 +72,7 @@
     </div>
 
     <!-- Quick Actions -->
-    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-6">
+    <div class="grid grid-cols-1 sm:grid-cols-1 gap-3 sm:gap-6">
         <a href="/available" class="group bg-uc-light-card dark:bg-uc-card rounded-xl p-4 sm:p-6 border border-uc-light-border dark:border-uc-border hover:border-uc-primary transition-colors">
             <div class="flex items-center">
                 <div class="p-3 bg-uc-primary/10 rounded-lg group-hover:bg-uc-primary/30 transition-colors flex items-center justify-center">
@@ -84,18 +84,6 @@
                 </div>
             </div>
         </a>
-
-        <button disabled class="group bg-uc-light-card dark:bg-uc-card rounded-xl p-4 sm:p-6 border border-uc-light-border dark:border-uc-border opacity-50 cursor-not-allowed text-left">
-            <div class="flex items-center">
-                <div class="p-3 bg-gray-500/20 rounded-lg flex items-center justify-center">
-                    <i class="fa-solid fa-upload text-2xl text-gray-500"></i>
-                </div>
-                <div class="ml-4">
-                    <h4 class="text-base sm:text-lg font-medium text-gray-900 dark:text-white">Update All</h4>
-                    <p class="text-sm text-gray-400">Coming soon</p>
-                </div>
-            </div>
-        </button>
     </div>
 </div>
 {% endblock %}
