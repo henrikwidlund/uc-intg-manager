@@ -854,7 +854,7 @@ class _SyncGitHubClient:
 
     def __init__(self) -> None:
         self._session = requests.Session()
-        self._session.verify = certifi.where()
+        self._session.verify = certifi.where()  # ty:ignore[invalid-assignment]
         self._session.headers.update(
             {
                 "Accept": "application/vnd.github.v3+json",
