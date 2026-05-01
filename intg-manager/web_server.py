@@ -143,9 +143,9 @@ def get_active_remote_id() -> str | None:
 
     Returns the first configured remote if no session is set.
     """
-    # Check session first
-    if "active_remote_id" in session:
-        return session["active_remote_id"]
+    sid = session.get("active_remote_id")
+    if sid and sid in _remote_configs:
+        return sid
 
     # Fallback to first configured remote
     if _remote_configs:
