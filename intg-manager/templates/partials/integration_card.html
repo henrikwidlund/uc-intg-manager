@@ -128,8 +128,8 @@
             <!-- Action buttons and version upgrade -->
             <div class="flex items-center gap-2">
             <!-- Sponsor button -->
-            {% if sponsors.get(integration.developer) %}
             {% set _spo = sponsors.get(integration.developer) %}
+            {% if _spo and _spo.links %}
             <div class="group relative">
                 <button class="p-1.5 text-pink-500 dark:text-pink-400 hover:bg-uc-card rounded-lg transition-colors">
                     <i class="fa-solid fa-heart h-4 w-4"></i>
@@ -365,8 +365,8 @@
         
         <div class="flex items-center gap-2">
             <!-- Sponsor button -->
-            {% if sponsors.get(integration.developer) %}
             {% set _spo = sponsors.get(integration.developer) %}
+            {% if _spo and _spo.links %}
             <div class="group relative">
                 <button class="p-1.5 text-pink-500 dark:text-pink-400 hover:bg-uc-card rounded-lg transition-colors">
                     <i class="fa-solid fa-heart h-4 w-4"></i>
