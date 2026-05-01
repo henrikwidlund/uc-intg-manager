@@ -182,14 +182,15 @@ def is_remote_online(remote_id: str | None) -> bool:
     if _device_is_remote_online_fn is None:
         try:
             from device import is_remote_online as fn
+            _device_is_remote_online_fn = fn
         except Exception as e:
             if not _device_import_logged:
                 _LOG.error(
                     "Failed to import is_remote_online from device module: %s", e
                 )
                 _device_import_logged = True
+            _device_is_remote_online_fn = lambda _rid: False  # noqa: E731
             return False
-        _device_is_remote_online_fn = fn
     return _device_is_remote_online_fn(remote_id)
 
 
