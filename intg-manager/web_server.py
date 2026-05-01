@@ -16,9 +16,10 @@ import logging
 import os
 import sys
 import threading
-from urllib.parse import urlparse
+import time
 from dataclasses import dataclass
 from datetime import datetime
+from urllib.parse import urlparse
 from pathlib import Path
 from typing import Any
 
@@ -255,8 +256,52 @@ def set_system_update_info(remote_id: str, update_info: dict) -> None:
 
 
 # Operation lock to prevent concurrent installs/upgrades
+_OPERATION_LOCK_TIMEOUT = 15 * 60  # 15 minutes — force-release stale lock
 _operation_in_progress: bool = False
+_operation_lock_acquired_at: float | None = None
 _operation_lock = asyncio.Lock()
+
+
+async def _try_acquire_operation_lock(operation_name: str):
+    """Acquire the operation lock.
+
+    Returns ``None`` when the lock is acquired successfully.  Returns a
+    ``(response, 409)`` tuple when another operation is already running and
+    has not timed out yet, so callers can do::
+
+        if conflict := await _try_acquire_operation_lock("install foo"):
+            return conflict
+    """
+    global _operation_in_progress, _operation_lock_acquired_at
+    async with _operation_lock:
+        _LOG.debug(
+            "Lock check [%s]: in_progress=%s", operation_name, _operation_in_progress
+        )
+        if _operation_in_progress:
+            elapsed = (
+                time.monotonic() - _operation_lock_acquired_at
+                if _operation_lock_acquired_at is not None
+                else 0
+            )
+            if elapsed > _OPERATION_LOCK_TIMEOUT:
+                _LOG.warning(
+                    "Operation lock held for %.0f seconds - force releasing stale lock",
+                    elapsed,
+                )
+                _operation_in_progress = False
+                _operation_lock_acquired_at = None
+            else:
+                _LOG.warning("Blocked [%s] - lock already held", operation_name)
+                return jsonify(
+                    {
+                        "status": "error",
+                        "message": "Another install/upgrade is in progress",
+                    }
+                ), 409
+        _operation_in_progress = True
+        _operation_lock_acquired_at = time.monotonic()
+        _LOG.info("Lock acquired [%s]", operation_name)
+    return None
 
 
 @dataclass
@@ -1180,12 +1225,11 @@ async def get_integrations_list():
 
         settings = Settings.load(remote_id=get_active_remote_id())
         remote_ip = (
-            _get_active_remote_client()._address
+            _get_active_remote_client()._address  # ty:ignore[unresolved-attribute]
             if _get_active_remote_client()
             else None
         )
         current_url = request.headers.get("HX-Current-URL", "")
-
         parsed_path = urlparse(current_url).path.rstrip("/")
         dashboard = parsed_path in ("", "/")
         return await render_template(
@@ -1206,7 +1250,7 @@ async def get_available_list():
     try:
         available = await _get_available_integrations(get_active_remote_id())
         remote_ip = (
-            _get_active_remote_client()._address
+            _get_active_remote_client()._address  # ty:ignore[unresolved-attribute]
             if _get_active_remote_client()
             else None
         )
@@ -1317,24 +1361,13 @@ async def _perform_update_integration(
     :param register_entities: Whether to register entities after update
     :param version: Optional specific version to update to (e.g., 'v1.2.3')
     """
+    global _operation_in_progress, _operation_lock_acquired_at
+
     if not _get_active_remote_client() or not _github_client:
         return jsonify({"status": "error", "message": "Service not initialized"}), 500
 
-    # Check if another operation is in progress
-    global _operation_in_progress
-    async with _operation_lock:
-        _LOG.info(
-            "Lock check for instance %s: _operation_in_progress=%s",
-            instance_id,
-            _operation_in_progress,
-        )
-        if _operation_in_progress:
-            _LOG.warning("Update blocked for instance %s - lock is held", instance_id)
-            return jsonify(
-                {"status": "error", "message": "Another install/upgrade is in progress"}
-            ), 409
-        _operation_in_progress = True
-        _LOG.info("Lock acquired for updating instance %s", instance_id)
+    if conflict := await _try_acquire_operation_lock(f"update instance {instance_id}"):
+        return conflict
 
     backup_data = None
     previous_version = None
@@ -1458,7 +1491,7 @@ async def _perform_update_integration(
                     "Capturing configured entities before update: %s", instance_id
                 )
                 configured_entities = (
-                    await _get_active_remote_client().get_configured_entities(
+                    await _get_active_remote_client().get_configured_entities(  # ty:ignore[unresolved-attribute]
                         instance_id
                     )
                 )
@@ -1651,7 +1684,7 @@ async def _perform_update_integration(
 
         # Delete the existing driver (cascades to delete instances)
         try:
-            await _get_active_remote_client().delete_driver(integration.driver_id)
+            await _get_active_remote_client().delete_driver(integration.driver_id)  # ty:ignore[unresolved-attribute]
         except SyncAPIError as e:
             error_str = str(e).lower()
             # Check if this is a connection/network error
@@ -1683,14 +1716,16 @@ async def _perform_update_integration(
             _LOG.warning("Failed to delete driver, continuing anyway: %s", e)
 
         # Install the new version
-        await _get_active_remote_client().install_integration(archive_data, filename)
+        await _get_active_remote_client().install_integration(archive_data, filename)  # ty:ignore[unresolved-attribute]
 
         # Brief pause to let installation settle
         await asyncio.sleep(API_DELAY * 2)
 
         # Post-installation verification - give the remote time to process the driver
         _LOG.debug("Waiting for driver to be ready: %s", integration.driver_id)
-        await _get_active_remote_client().get_drivers()  # Verify driver is available
+        await (
+            _get_active_remote_client().get_drivers()  # ty:ignore[unresolved-attribute]
+        )  # Verify driver is available
 
         # Additional pause to ensure driver is fully initialized
         await asyncio.sleep(API_DELAY * 3)
@@ -1701,7 +1736,7 @@ async def _perform_update_integration(
 
         if previous_version:
             # Get current version for migration checks
-            driver_info = await _get_active_remote_client().get_driver(
+            driver_info = await _get_active_remote_client().get_driver(  # ty:ignore[unresolved-attribute]
                 integration.driver_id
             )
             if driver_info:
@@ -1788,7 +1823,7 @@ async def _perform_update_integration(
                 )
 
                 # Step 1: Start setup for restore
-                await _get_active_remote_client().start_setup(
+                await _get_active_remote_client().start_setup(  # ty:ignore[unresolved-attribute]
                     integration.driver_id, reconfigure=False
                 )
                 _LOG.info("Started setup for restore (reconfigure=false)")
@@ -1798,7 +1833,7 @@ async def _perform_update_integration(
                 )  # Give more time for setup to initialize
 
                 # Step 1a: Check for migration metadata in the setup response
-                setup_response = await _get_active_remote_client().get_setup(
+                setup_response = await _get_active_remote_client().get_setup(  # ty:ignore[unresolved-attribute]
                     integration.driver_id
                 )
                 _LOG.debug("Initial setup response: %s", setup_response)
@@ -1811,7 +1846,7 @@ async def _perform_update_integration(
                         setup_state,
                     )
                     await asyncio.sleep(API_DELAY * 2)
-                    setup_response = await _get_active_remote_client().get_setup(
+                    setup_response = await _get_active_remote_client().get_setup(  # ty:ignore[unresolved-attribute]
                         integration.driver_id
                     )
                     setup_state = setup_response.get("state", "")
@@ -1897,7 +1932,7 @@ async def _perform_update_integration(
                     _LOG.info("No previous_version provided - skipping migration check")
 
                 # Step 2: PUT /intg/setup/{driver_id} with restore_from_backup="true"
-                await _get_active_remote_client().send_setup_input(
+                await _get_active_remote_client().send_setup_input(  # ty:ignore[unresolved-attribute]
                     integration.driver_id, {"restore_from_backup": "true"}
                 )
                 _LOG.info("Initiated restore mode")
@@ -1915,7 +1950,7 @@ async def _perform_update_integration(
                     _LOG.warning("Backup data is not valid JSON, using as-is: %s", e)
                     escaped_backup_data = backup_data
 
-                await _get_active_remote_client().send_setup_input(
+                await _get_active_remote_client().send_setup_input(  # ty:ignore[unresolved-attribute]
                     integration.driver_id,
                     {
                         "restore_from_backup": "true",
@@ -1929,11 +1964,11 @@ async def _perform_update_integration(
                 _LOG.info(
                     "Performing post-restore verification for %s", integration.driver_id
                 )
-                await _get_active_remote_client().get_enabled_integrations()
+                await _get_active_remote_client().get_enabled_integrations()  # ty:ignore[unresolved-attribute]
 
                 # Get enabled instances and find our restored instance
                 enabled_instances = (
-                    await _get_active_remote_client().get_enabled_instances()
+                    await _get_active_remote_client().get_enabled_instances()  # ty:ignore[unresolved-attribute]
                 )
                 restored_instance_id = None
                 for instance in enabled_instances:
@@ -1946,14 +1981,14 @@ async def _perform_update_integration(
                         )
                         break
 
-                await _get_active_remote_client().get_instantiable_drivers()
-                await _get_active_remote_client().get_driver(integration.driver_id)
+                await _get_active_remote_client().get_instantiable_drivers()  # ty:ignore[unresolved-attribute]
+                await _get_active_remote_client().get_driver(integration.driver_id)  # ty:ignore[unresolved-attribute]
 
                 # Complete the setup flow (like official tool)
-                await _get_active_remote_client().complete_setup(integration.driver_id)
+                await _get_active_remote_client().complete_setup(integration.driver_id)  # ty:ignore[unresolved-attribute]
 
                 # Final verification call after DELETE (like official tool)
-                await _get_active_remote_client().get_enabled_instances()
+                await _get_active_remote_client().get_enabled_instances()  # ty:ignore[unresolved-attribute]
 
                 _LOG.info(
                     "Configuration restored successfully for %s", integration.driver_id
@@ -1963,10 +1998,10 @@ async def _perform_update_integration(
                 # Migration needs entities to exist on Remote to update activities
                 all_entities = []
                 if migration_possible and restored_instance_id:
-                    await _get_active_remote_client().get_enabled_instances()
+                    await _get_active_remote_client().get_enabled_instances()  # ty:ignore[unresolved-attribute]
 
                     all_entities = (
-                        await _get_active_remote_client().get_instance_entities(
+                        await _get_active_remote_client().get_instance_entities(  # ty:ignore[unresolved-attribute]
                             restored_instance_id
                         )
                     )
@@ -1993,7 +2028,7 @@ async def _perform_update_integration(
                         _LOG.debug("All entity IDs: %s", all_entity_ids)
 
                         try:
-                            await _get_active_remote_client().register_entities(
+                            await _get_active_remote_client().register_entities(  # ty:ignore[unresolved-attribute]
                                 restored_instance_id, all_entity_ids
                             )
                             _LOG.info(
@@ -2026,7 +2061,7 @@ async def _perform_update_integration(
                         )
 
                         # POST with reconfigure=true to get to the configuration mode screen
-                        await _get_active_remote_client().start_setup(
+                        await _get_active_remote_client().start_setup(  # ty:ignore[unresolved-attribute]
                             integration.driver_id, reconfigure=True
                         )
                         _LOG.info("Started setup mode for migration")
@@ -2034,7 +2069,7 @@ async def _perform_update_integration(
                         await asyncio.sleep(API_DELAY)
 
                         # GET to read the configuration mode screen
-                        setup_response = await _get_active_remote_client().get_setup(
+                        setup_response = await _get_active_remote_client().get_setup(  # ty:ignore[unresolved-attribute]
                             integration.driver_id
                         )
                         _LOG.debug("Setup response for migration: %s", setup_response)
@@ -2057,7 +2092,7 @@ async def _perform_update_integration(
                             raise ValueError("No device choice found")
 
                         # Step 4a: Select "migrate" action with the choice
-                        await _get_active_remote_client().send_setup_input(
+                        await _get_active_remote_client().send_setup_input(  # ty:ignore[unresolved-attribute]
                             integration.driver_id,
                             {"choice": choice_id, "action": "migrate"},
                         )
@@ -2068,7 +2103,7 @@ async def _perform_update_integration(
                         await asyncio.sleep(API_DELAY * 2)
 
                         # Step 4b: GET the next setup page after selecting migrate
-                        setup_response = await _get_active_remote_client().get_setup(
+                        setup_response = await _get_active_remote_client().get_setup(  # ty:ignore[unresolved-attribute]
                             integration.driver_id
                         )
                         _LOG.debug(
@@ -2087,7 +2122,7 @@ async def _perform_update_integration(
                             )
 
                         # Step 4c: Send previous_version
-                        await _get_active_remote_client().send_setup_input(
+                        await _get_active_remote_client().send_setup_input(  # ty:ignore[unresolved-attribute]
                             integration.driver_id,
                             {"previous_version": previous_version},
                         )
@@ -2096,16 +2131,16 @@ async def _perform_update_integration(
                         await asyncio.sleep(API_DELAY * 2)
 
                         # GET the migration execution screen (asks for remote_url, pin, etc.)
-                        setup_response = await _get_active_remote_client().get_setup(
+                        setup_response = await _get_active_remote_client().get_setup(  # ty:ignore[unresolved-attribute]
                             integration.driver_id
                         )
                         _LOG.debug("Migration execution screen: %s", setup_response)
 
                         # Prepare migration data
                         remote_url = (
-                            _get_active_remote_client()._address or "http://localhost"
+                            _get_active_remote_client()._address or "http://localhost"  # ty:ignore[unresolved-attribute]
                         )
-                        remote_api_key = _get_active_remote_client()._api_key or ""
+                        remote_api_key = _get_active_remote_client()._api_key or ""  # ty:ignore[unresolved-attribute]
 
                         _LOG.info(
                             "Executing migration for %s (from %s to %s)",
@@ -2137,7 +2172,7 @@ async def _perform_update_integration(
                             current_version,
                         )
 
-                        await _get_active_remote_client().send_setup_input(
+                        await _get_active_remote_client().send_setup_input(  # ty:ignore[unresolved-attribute]
                             integration.driver_id, migration_input
                         )
                         _LOG.debug("Migration execution data sent successfully")
@@ -2147,7 +2182,7 @@ async def _perform_update_integration(
                         )  # Give more time for migration to process
 
                         # GET to read the migration mappings response
-                        setup_response = await _get_active_remote_client().get_setup(
+                        setup_response = await _get_active_remote_client().get_setup(  # ty:ignore[unresolved-attribute]
                             integration.driver_id
                         )
                         _LOG.debug("Migration mappings response: %s", setup_response)
@@ -2233,7 +2268,7 @@ async def _perform_update_integration(
                             )
 
                         # Complete migration setup flow
-                        await _get_active_remote_client().complete_setup(
+                        await _get_active_remote_client().complete_setup(  # ty:ignore[unresolved-attribute]
                             integration.driver_id
                         )
 
@@ -2250,7 +2285,7 @@ async def _perform_update_integration(
                     device_state_step6 = "UNKNOWN"
                     for attempt in range(12):  # up to ~18 seconds
                         instance_detail_step6 = (
-                            await _get_active_remote_client().get_instance(
+                            await _get_active_remote_client().get_instance(  # ty:ignore[unresolved-attribute]
                                 restored_instance_id
                             )
                         )
@@ -2290,7 +2325,7 @@ async def _perform_update_integration(
                                 "Deleting all entities for instance %s",
                                 restored_instance_id,
                             )
-                            await _get_active_remote_client().delete_all_entities(
+                            await _get_active_remote_client().delete_all_entities(  # ty:ignore[unresolved-attribute]
                                 restored_instance_id
                             )
                             _LOG.info("All entities deleted")
@@ -2307,7 +2342,7 @@ async def _perform_update_integration(
                                 "Configured entity IDs: %s", configured_entity_ids
                             )
 
-                            await _get_active_remote_client().register_entities(
+                            await _get_active_remote_client().register_entities(  # ty:ignore[unresolved-attribute]
                                 restored_instance_id, configured_entity_ids
                             )
                             _LOG.info(
@@ -2331,7 +2366,7 @@ async def _perform_update_integration(
 
                         for reg_attempt in range(4):
                             try:
-                                await _get_active_remote_client().register_entities(
+                                await _get_active_remote_client().register_entities(  # ty:ignore[unresolved-attribute]
                                     restored_instance_id, configured_entity_ids
                                 )
                                 _LOG.info(
@@ -2350,7 +2385,7 @@ async def _perform_update_integration(
 
                             # Verify registration stuck
                             await asyncio.sleep(3)
-                            verified = await _get_active_remote_client().get_configured_entities(
+                            verified = await _get_active_remote_client().get_configured_entities(  # ty:ignore[unresolved-attribute]
                                 restored_instance_id
                             )
                             verified_ids = [
@@ -2380,11 +2415,11 @@ async def _perform_update_integration(
                 )
                 # Try to clean up setup flow even on failure (twice like official tool)
                 try:
-                    await _get_active_remote_client().complete_setup(
+                    await _get_active_remote_client().complete_setup(  # ty:ignore[unresolved-attribute]
                         integration.driver_id
                     )
                     # Final verification call after double DELETE
-                    await _get_active_remote_client().get_enabled_instances()
+                    await _get_active_remote_client().get_enabled_instances()  # ty:ignore[unresolved-attribute]
                     await asyncio.sleep(API_DELAY)  # Brief pause after cleanup
                 except SyncAPIError:
                     pass
@@ -2396,14 +2431,14 @@ async def _perform_update_integration(
                 )
                 # Try to clean up setup flow even on failure (twice like official tool)
                 try:
-                    await _get_active_remote_client().complete_setup(
+                    await _get_active_remote_client().complete_setup(  # ty:ignore[unresolved-attribute]
                         integration.driver_id
                     )
-                    await _get_active_remote_client().complete_setup(
+                    await _get_active_remote_client().complete_setup(  # ty:ignore[unresolved-attribute]
                         integration.driver_id
                     )
                     # Final verification call after double DELETE
-                    await _get_active_remote_client().get_enabled_instances()
+                    await _get_active_remote_client().get_enabled_instances()  # ty:ignore[unresolved-attribute]
                     await asyncio.sleep(API_DELAY)  # Brief pause after cleanup
                 except SyncAPIError:
                     pass
@@ -2451,7 +2486,7 @@ async def _perform_update_integration(
             # Return the updated card HTML
             settings = Settings.load(remote_id=remote_id)
             remote_ip = (
-                _get_active_remote_client()._address
+                _get_active_remote_client()._address  # ty:ignore[unresolved-attribute]
                 if _get_active_remote_client()
                 else None
             )
@@ -2471,7 +2506,7 @@ async def _perform_update_integration(
             )
             settings = Settings.load(remote_id=get_active_remote_id())
             remote_ip = (
-                _get_active_remote_client()._address
+                _get_active_remote_client()._address  # ty:ignore[unresolved-attribute]
                 if _get_active_remote_client()
                 else None
             )
@@ -2525,6 +2560,11 @@ async def _perform_update_integration(
         ''',
             500,
         )
+    finally:
+        # Safety net: ensure lock is released even on asyncio.CancelledError
+        # (CancelledError is BaseException, not Exception, so won't be caught above)
+        _operation_in_progress = False
+        _operation_lock_acquired_at = None
 
 
 @app.route("/api/driver/<driver_id>/update", methods=["POST"])
@@ -2538,6 +2578,8 @@ async def update_driver(driver_id: str):
     Since there's no instance, there's nothing to backup or restore - just download
     and install the new version.
     """
+    global _operation_in_progress, _operation_lock_acquired_at
+
     if not _get_active_remote_client() or not _github_client:
         return jsonify({"status": "error", "message": "Service not initialized"}), 500
 
@@ -2545,21 +2587,8 @@ async def update_driver(driver_id: str):
     _form = await request.form
     version = request.args.get("version") or _form.get("version")
 
-    # Check if another operation is in progress
-    global _operation_in_progress
-    async with _operation_lock:
-        _LOG.info(
-            "Lock check for driver %s: _operation_in_progress=%s",
-            driver_id,
-            _operation_in_progress,
-        )
-        if _operation_in_progress:
-            _LOG.warning("Update blocked for driver %s - lock is held", driver_id)
-            return jsonify(
-                {"status": "error", "message": "Another install/upgrade is in progress"}
-            ), 409
-        _operation_in_progress = True
-        _LOG.info("Lock acquired for updating driver %s", driver_id)
+    if conflict := await _try_acquire_operation_lock(f"update driver {driver_id}"):
+        return conflict
 
     try:
         # Find the driver to get its GitHub URL
@@ -2696,7 +2725,7 @@ async def update_driver(driver_id: str):
 
         # Delete the existing driver
         try:
-            await _get_active_remote_client().delete_driver(driver_id)
+            await _get_active_remote_client().delete_driver(driver_id)  # ty:ignore[unresolved-attribute]
             _LOG.info("Deleted existing driver: %s", driver_id)
         except SyncAPIError as e:
             error_str = str(e).lower()
@@ -2726,7 +2755,7 @@ async def update_driver(driver_id: str):
             _LOG.warning("Failed to delete driver, continuing anyway: %s", e)
 
         # Install the new version
-        await _get_active_remote_client().install_integration(archive_data, filename)
+        await _get_active_remote_client().install_integration(archive_data, filename)  # ty:ignore[unresolved-attribute]
         _LOG.info("Updated driver %s successfully", integration.name)
 
         # Wait for the specific driver to appear in the driver list
@@ -2735,7 +2764,7 @@ async def update_driver(driver_id: str):
         for attempt in range(10):
             await asyncio.sleep(0.5)
             try:
-                drivers = await _get_active_remote_client().get_drivers()
+                drivers = await _get_active_remote_client().get_drivers()  # ty:ignore[unresolved-attribute]
                 if any(d.get("driver_id") == driver_id for d in drivers):
                     driver_found = True
                     _LOG.debug(
@@ -2791,7 +2820,7 @@ async def update_driver(driver_id: str):
         )
 
         remote_ip = (
-            _get_active_remote_client()._address
+            _get_active_remote_client()._address  # ty:ignore[unresolved-attribute]
             if _get_active_remote_client()
             else None
         )
@@ -2891,6 +2920,7 @@ async def update_driver(driver_id: str):
         # Release operation lock
         async with _operation_lock:
             _operation_in_progress = False
+            _operation_lock_acquired_at = None
             _LOG.info(
                 "Lock released after generic exception in update_driver for driver %s",
                 driver_id,
@@ -2905,6 +2935,10 @@ async def update_driver(driver_id: str):
         ''',
             500,
         )
+    finally:
+        # Safety net: ensure lock is released even on asyncio.CancelledError
+        _operation_in_progress = False
+        _operation_lock_acquired_at = None
 
 
 @app.route("/api/integration/<driver_id>/update-confirm")
@@ -3027,8 +3061,13 @@ async def delete_integration(driver_id: str):
     Query parameters:
     - type: 'configuration' or 'full'
     """
+    global _operation_in_progress, _operation_lock_acquired_at
+
     if not _get_active_remote_client():
         return jsonify({"status": "error", "message": "Service not initialized"}), 500
+
+    if conflict := await _try_acquire_operation_lock(f"delete {driver_id}"):
+        return conflict
 
     remote_id = get_active_remote_id()
     delete_type = request.args.get("type", "configuration")
@@ -3053,7 +3092,7 @@ async def delete_integration(driver_id: str):
         # Only delete instance if it's actually configured
         if is_configured:
             try:
-                await _get_active_remote_client().delete_instance(instance_id)
+                await _get_active_remote_client().delete_instance(instance_id)  # ty:ignore[unresolved-attribute]
                 _LOG.info("Deleted instance: %s", instance_id)
             except SyncAPIError as e:
                 _LOG.warning("Failed to delete instance %s: %s", instance_id, e)
@@ -3064,7 +3103,7 @@ async def delete_integration(driver_id: str):
             await asyncio.sleep(API_DELAY * 2)
 
             try:
-                await _get_active_remote_client().delete_driver(driver_id)
+                await _get_active_remote_client().delete_driver(driver_id)  # ty:ignore[unresolved-attribute]
                 _LOG.info("Deleted driver: %s", driver_id)
             except SyncAPIError as e:
                 _LOG.error("Failed to delete driver %s: %s", driver_id, e)
@@ -3077,53 +3116,7 @@ async def delete_integration(driver_id: str):
 
         # Return updated card or empty response
         if delete_type == "full":
-            # Full delete - check if this driver exists in the registry (available list)
-            # If it does, return updated available_card showing uninstalled state
-            # If not, return empty (card will be removed from integration_list)
-            registry = load_registry()
-            registry_item = next(
-                (r for r in registry if r.get("driver_id") == driver_id), None
-            )
-
-            if registry_item:
-                # Driver is in registry - construct available_card showing uninstalled state
-                # Build AvailableIntegration from registry data
-                settings = Settings.load(remote_id=get_active_remote_id())
-                remote_ip = (
-                    _get_active_remote_client()._address
-                    if _get_active_remote_client()
-                    else None
-                )
-
-                available_integration = AvailableIntegration(
-                    driver_id=registry_item.get("driver_id", ""),
-                    name=registry_item.get("name", ""),
-                    description=registry_item.get("description", {}),
-                    developer=registry_item.get("developer", ""),
-                    home_page=registry_item.get("home_page", ""),
-                    version="",  # Not installed, so no version
-                    icon=registry_item.get("icon", "puzzle-piece"),
-                    official=registry_item.get("official", False),
-                    category=registry_item.get("category", ""),
-                    installed=False,  # Just deleted
-                    driver_installed=False,
-                    update_available=False,
-                    latest_version="",
-                    can_update=False,
-                    can_auto_update=False,
-                    supports_backup=registry_item.get("supports_backup", False),
-                    external=False,
-                    instance_id="",
-                )
-
-                return await render_template(
-                    "partials/available_card.html",
-                    integration=available_integration,
-                    remote_ip=remote_ip,
-                    settings=settings,
-                )
-
-            # Not in registry or not found - return empty (card will be removed)
+            # Full delete - remove the card entirely
             return "", 200
         else:
             # Configuration delete - return updated card showing unconfigured state
@@ -3135,7 +3128,7 @@ async def delete_integration(driver_id: str):
             if integration:
                 settings = Settings.load(remote_id=remote_id)
                 remote_ip = (
-                    _get_active_remote_client()._address
+                    _get_active_remote_client()._address  # ty:ignore[unresolved-attribute]
                     if _get_active_remote_client()
                     else None
                 )
@@ -3152,6 +3145,11 @@ async def delete_integration(driver_id: str):
     except Exception as e:
         _LOG.error("Unexpected error during delete for %s: %s", driver_id, e)
         return jsonify({"status": "error", "message": str(e)}), 500
+    finally:
+        async with _operation_lock:
+            _operation_in_progress = False
+            _operation_lock_acquired_at = None
+            _LOG.info("Lock released after delete %s", driver_id)
 
 
 async def _build_error_card(driver_id: str, registry: list, error_msg: str) -> str:
@@ -3183,7 +3181,7 @@ async def _build_error_card(driver_id: str, registry: list, error_msg: str) -> s
     )
 
     remote_ip = (
-        _get_active_remote_client()._address if _get_active_remote_client() else None
+        _get_active_remote_client()._address if _get_active_remote_client() else None  # ty:ignore[unresolved-attribute]
     )
     return await render_template(
         "partials/available_card.html",
@@ -3207,6 +3205,8 @@ async def install_integration(driver_id: str):
     4. Validate against migration boundary if version specified
     5. Upload and install on the remote
     """
+    global _operation_in_progress, _operation_lock_acquired_at
+
     if not _get_active_remote_client() or not _github_client:
         return jsonify({"status": "error", "message": "Service not initialized"}), 500
 
@@ -3214,21 +3214,8 @@ async def install_integration(driver_id: str):
     _form = await request.form
     version = request.args.get("version") or _form.get("version")
 
-    # Check if another operation is in progress
-    global _operation_in_progress
-    async with _operation_lock:
-        _LOG.info(
-            "Lock check for install %s: _operation_in_progress=%s",
-            driver_id,
-            _operation_in_progress,
-        )
-        if _operation_in_progress:
-            _LOG.warning("Install blocked for %s - lock is held", driver_id)
-            return jsonify(
-                {"status": "error", "message": "Another install/upgrade is in progress"}
-            ), 409
-        _operation_in_progress = True
-        _LOG.info("Lock acquired for installing %s", driver_id)
+    if conflict := await _try_acquire_operation_lock(f"install {driver_id}"):
+        return conflict
 
     try:
         # Find the integration in the registry
@@ -3343,7 +3330,7 @@ async def install_integration(driver_id: str):
         _LOG.info("Downloaded %s (%d bytes) for install", filename, len(archive_data))
 
         # Install the integration
-        await _get_active_remote_client().install_integration(archive_data, filename)
+        await _get_active_remote_client().install_integration(archive_data, filename)  # ty:ignore[unresolved-attribute]
         _LOG.info("Installed integration %s successfully", integration.get("name"))
 
         # Release operation lock
@@ -3378,7 +3365,7 @@ async def install_integration(driver_id: str):
         )
 
         remote_ip = (
-            _get_active_remote_client()._address
+            _get_active_remote_client()._address  # ty:ignore[unresolved-attribute]
             if _get_active_remote_client()
             else None
         )
@@ -3409,12 +3396,49 @@ async def install_integration(driver_id: str):
         # Release operation lock
         async with _operation_lock:
             _operation_in_progress = False
+            _operation_lock_acquired_at = None
             _LOG.info(
                 "Lock released after generic exception in install_integration for %s",
                 driver_id,
             )
 
         return await _build_error_card(driver_id, registry, error_msg), 200
+    finally:
+        # Safety net: ensure lock is released even on asyncio.CancelledError
+        _operation_in_progress = False
+        _operation_lock_acquired_at = None
+
+
+@app.route("/api/operation-lock/status")
+async def get_operation_lock_status():
+    """Return whether an install/update operation is currently in progress."""
+    elapsed: float | None = None
+    if _operation_in_progress and _operation_lock_acquired_at is not None:
+        elapsed = round(time.monotonic() - _operation_lock_acquired_at)
+    return jsonify({"locked": _operation_in_progress, "elapsed_seconds": elapsed})
+
+
+@app.route("/api/operation-lock/release", methods=["POST"])
+async def release_operation_lock():
+    """Manually release a stuck operation lock."""
+    global _operation_in_progress, _operation_lock_acquired_at
+    async with _operation_lock:
+        was_locked = _operation_in_progress
+        elapsed = (
+            round(time.monotonic() - _operation_lock_acquired_at)
+            if _operation_in_progress and _operation_lock_acquired_at is not None
+            else None
+        )
+        _operation_in_progress = False
+        _operation_lock_acquired_at = None
+    if was_locked:
+        _LOG.warning(
+            "Operation lock manually released by user (was held for %s seconds)",
+            elapsed,
+        )
+    return jsonify(
+        {"status": "ok", "was_locked": was_locked, "elapsed_seconds": elapsed}
+    )
 
 
 @app.route("/api/backup/all", methods=["POST"])
@@ -3870,7 +3894,7 @@ async def self_update():
     # temporarily installs the bootstrapper as an extra custom driver, so we
     # need at least one open slot (current count must be < 10).
     _INTEGRATION_SLOT_LIMIT = 10
-    active_count = await _get_active_remote_client().get_custom_active_drivers_count()
+    active_count = await _get_active_remote_client().get_custom_active_drivers_count()  # ty:ignore[unresolved-attribute]
     if active_count >= _INTEGRATION_SLOT_LIMIT:
         _LOG.warning(
             "Self-update aborted: %d/%d integration slots in use — no room for bootstrapper",
@@ -4051,18 +4075,18 @@ async def self_update():
         # --- Step 4: Install bootstrapper ---
         # Delete any stale bootstrapper first (ignore errors)
         try:
-            await _get_active_remote_client().delete_driver(bootstrapper_driver_id)
+            await _get_active_remote_client().delete_driver(bootstrapper_driver_id)  # ty:ignore[unresolved-attribute]
             await asyncio.sleep(API_DELAY)
         except SyncAPIError:
             pass  # Not installed yet — fine
 
-        await _get_active_remote_client().install_integration(archive_data, filename)
+        await _get_active_remote_client().install_integration(archive_data, filename)  # ty:ignore[unresolved-attribute]
         _LOG.info("Bootstrapper installed")
         await asyncio.sleep(API_DELAY * 3)
 
         # --- Step 5: Run bootstrapper setup flow ---
         # Start setup (new install, reconfigure=False)
-        await _get_active_remote_client().start_setup(
+        await _get_active_remote_client().start_setup(  # ty:ignore[unresolved-attribute]
             bootstrapper_driver_id, reconfigure=False
         )
         _LOG.info("Bootstrapper setup started")
@@ -4072,7 +4096,7 @@ async def self_update():
         # BaseSetupFlow always injects this screen first.
         setup_state = ""
         for _ in range(6):
-            setup_response = await _get_active_remote_client().get_setup(
+            setup_response = await _get_active_remote_client().get_setup(  # ty:ignore[unresolved-attribute]
                 bootstrapper_driver_id
             )
             setup_state = setup_response.get("state", "")
@@ -4087,7 +4111,7 @@ async def self_update():
 
         # Step 5b: Answer restore_from_backup = true
         _LOG.info("Bootstrapper setup: answering restore_from_backup=true")
-        await _get_active_remote_client().send_setup_input(
+        await _get_active_remote_client().send_setup_input(  # ty:ignore[unresolved-attribute]
             bootstrapper_driver_id, {"restore_from_backup": "true"}
         )
         await asyncio.sleep(API_DELAY * 3)
@@ -4095,7 +4119,7 @@ async def self_update():
         # Step 5c: Wait for second WAIT_USER_ACTION (manual entry form)
         setup_state = ""
         for _ in range(6):
-            setup_response = await _get_active_remote_client().get_setup(
+            setup_response = await _get_active_remote_client().get_setup(  # ty:ignore[unresolved-attribute]
                 bootstrapper_driver_id
             )
             setup_state = setup_response.get("state", "")
@@ -4125,7 +4149,7 @@ async def self_update():
             version,
             manager_driver_id,
         )
-        await _get_active_remote_client().send_setup_input(
+        await _get_active_remote_client().send_setup_input(  # ty:ignore[unresolved-attribute]
             bootstrapper_driver_id, {"restore_data": restore_payload}
         )
         await asyncio.sleep(API_DELAY * 2)
@@ -4254,7 +4278,7 @@ async def dev_test_bootstrapper_setup():
 
         # --- Step 1: start_setup ---
         log_step(f"Calling start_setup({bootstrapper_driver_id!r}) …")
-        await _get_active_remote_client().start_setup(
+        await _get_active_remote_client().start_setup(  # ty:ignore[unresolved-attribute]
             bootstrapper_driver_id, reconfigure=False
         )
         await asyncio.sleep(API_DELAY * 3)
@@ -4262,7 +4286,7 @@ async def dev_test_bootstrapper_setup():
         # --- Step 2: poll for first WAIT_USER_ACTION (restore_from_backup screen) ---
         setup_state = ""
         for attempt in range(5):
-            resp = await _get_active_remote_client().get_setup(bootstrapper_driver_id)
+            resp = await _get_active_remote_client().get_setup(bootstrapper_driver_id)  # ty:ignore[unresolved-attribute]
             setup_state = resp.get("state", "")
             log_step(f"  attempt {attempt + 1}: state={setup_state!r}")
             if setup_state == "WAIT_USER_ACTION":
@@ -4280,7 +4304,7 @@ async def dev_test_bootstrapper_setup():
 
         # --- Step 3: answer restore_from_backup = true ---
         log_step("Answering restore_from_backup=true …")
-        await _get_active_remote_client().send_setup_input(
+        await _get_active_remote_client().send_setup_input(  # ty:ignore[unresolved-attribute]
             bootstrapper_driver_id, {"restore_from_backup": "true"}
         )
         await asyncio.sleep(API_DELAY * 3)
@@ -4288,7 +4312,7 @@ async def dev_test_bootstrapper_setup():
         # --- Step 4: poll for second WAIT_USER_ACTION (manual entry form) ---
         setup_state = ""
         for attempt in range(5):
-            resp = await _get_active_remote_client().get_setup(bootstrapper_driver_id)
+            resp = await _get_active_remote_client().get_setup(bootstrapper_driver_id)  # ty:ignore[unresolved-attribute]
             setup_state = resp.get("state", "")
             log_step(
                 f"  attempt {attempt + 1} (post-restore toggle): state={setup_state!r}"
@@ -4317,7 +4341,7 @@ async def dev_test_bootstrapper_setup():
                 "config_data": config_data_str,
             }
         )
-        await _get_active_remote_client().send_setup_input(
+        await _get_active_remote_client().send_setup_input(  # ty:ignore[unresolved-attribute]
             bootstrapper_driver_id, {"restore_data": restore_payload}
         )
         await asyncio.sleep(API_DELAY * 2)
@@ -4453,7 +4477,7 @@ async def get_status():
         return jsonify({"error": "Service not initialized"})
 
     try:
-        is_docked = await _get_active_remote_client().is_docked()
+        is_docked = await _get_active_remote_client().is_docked()  # ty:ignore[unresolved-attribute]
         return jsonify({"docked": is_docked, "server": "running"})
     except Exception as e:
         return jsonify({"error": str(e)})
@@ -4466,7 +4490,7 @@ async def get_status_html():
         return '<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-600 dark:bg-red-500/20 text-white dark:text-red-300">Not Connected</span>'
 
     try:
-        is_docked = await _get_active_remote_client().is_docked()
+        is_docked = await _get_active_remote_client().is_docked()  # ty:ignore[unresolved-attribute]
         docked_badge = (
             '<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-700 dark:bg-green-500/20 text-white dark:text-green-300">'
             '<i class="fa-regular fa-charging-station mr-1.5"></i>Docked</span>'
@@ -4503,7 +4527,7 @@ async def settings_page():
         "settings.html",
         settings=settings,
         ui_prefs=ui_prefs,
-        remote_address=_get_active_remote_client()._address
+        remote_address=_get_active_remote_client()._address  # ty:ignore[unresolved-attribute]
         if _get_active_remote_client()
         else None,
         web_server_port=WEB_SERVER_PORT,
@@ -5148,7 +5172,7 @@ async def integration_logs_page():
 
     try:
         # Get available log services from the remote
-        services = await _get_active_remote_client().get_log_services()
+        services = await _get_active_remote_client().get_log_services()  # ty:ignore[unresolved-attribute]
 
         _LOG.debug("Fetched %d total log services from remote", len(services))
 
@@ -5233,7 +5257,7 @@ async def get_integration_logs_entries():
 
     try:
         if len(services) == 1:
-            logs = await _get_active_remote_client().get_logs(
+            logs = await _get_active_remote_client().get_logs(  # ty:ignore[unresolved-attribute]
                 priority=priority,
                 service=services[0],
                 limit=1000,
@@ -5244,7 +5268,7 @@ async def get_integration_logs_entries():
             all_logs = []
             per_service_limit = max(200, 1000 // len(services))
             for svc in services:
-                svc_logs = await _get_active_remote_client().get_logs(
+                svc_logs = await _get_active_remote_client().get_logs(  # ty:ignore[unresolved-attribute]
                     priority=priority,
                     service=svc,
                     limit=per_service_limit,
@@ -5301,7 +5325,7 @@ async def download_integration_logs():
 
     try:
         if len(services) == 1:
-            log_text = await _get_active_remote_client().get_logs(
+            log_text = await _get_active_remote_client().get_logs(  # ty:ignore[unresolved-attribute]
                 priority=priority,
                 service=services[0],
                 limit=10000,
@@ -5315,7 +5339,7 @@ async def download_integration_logs():
             # Fetch each service as text and concatenate
             parts = []
             for svc in services:
-                svc_text = await _get_active_remote_client().get_logs(
+                svc_text = await _get_active_remote_client().get_logs(  # ty:ignore[unresolved-attribute]
                     priority=priority,
                     service=svc,
                     limit=10000,
@@ -5506,7 +5530,7 @@ async def diagnostics_page():
     system_update = _system_update_cache.get(remote_id, {}) if remote_id else {}
     return await render_template(
         "diagnostics.html",
-        remote_address=_get_active_remote_client()._address
+        remote_address=_get_active_remote_client()._address  # ty:ignore[unresolved-attribute]
         if _get_active_remote_client()
         else "localhost",
         system_update=system_update,
@@ -5559,7 +5583,7 @@ async def get_orphaned_entities():
         )
 
     try:
-        orphaned_entities = await _get_active_remote_client().find_orphan_entities()
+        orphaned_entities = await _get_active_remote_client().find_orphan_entities()  # ty:ignore[unresolved-attribute]
         _LOG.debug("Orphaned entities data: %s", orphaned_entities)
 
         # Group entities by activity for display
@@ -5592,7 +5616,7 @@ async def get_orphaned_entities():
             activities[activity_id]["entities"].append(entity_copy)
 
         remote_ip = (
-            _get_active_remote_client()._address
+            _get_active_remote_client()._address  # ty:ignore[unresolved-attribute]
             if _get_active_remote_client()
             else None
         )
@@ -5627,7 +5651,7 @@ async def get_unused_activity_entities():
         )
 
     try:
-        unused = await _get_active_remote_client().find_unused_entities()
+        unused = await _get_active_remote_client().find_unused_entities()  # ty:ignore[unresolved-attribute]
         _LOG.debug("Unused activity entities data: %s", unused)
 
         # Group by activity for display
@@ -5656,7 +5680,7 @@ async def get_unused_activity_entities():
             activities[activity_id]["entities"].append(entity_copy)
 
         remote_ip = (
-            _get_active_remote_client()._address
+            _get_active_remote_client()._address  # ty:ignore[unresolved-attribute]
             if _get_active_remote_client()
             else None
         )
@@ -5733,7 +5757,7 @@ async def delete_ir_codeset(device_id: str):
         return jsonify({"error": "Not connected to remote"}), 500
 
     try:
-        await _get_active_remote_client().delete_custom_ir_codeset(device_id)
+        await _get_active_remote_client().delete_custom_ir_codeset(device_id)  # ty:ignore[unresolved-attribute]
         _LOG.info("Deleted IR codeset: %s", device_id)
         # Return empty response to remove the element from DOM
         return "", 200
@@ -5762,7 +5786,7 @@ async def reassociate_ir_codeset():
             return jsonify({"error": "Missing device_id or remote_name"}), 400
 
         # Create remote with custom codeset ID
-        await _get_active_remote_client().create_remote(remote_name, device_id)
+        await _get_active_remote_client().create_remote(remote_name, device_id)  # ty:ignore[unresolved-attribute]
 
         _LOG.info("Created remote '%s' for codeset %s", remote_name, device_id)
         # Return empty response to remove the element from DOM
@@ -5779,7 +5803,7 @@ async def system_reboot():
         return jsonify({"error": "Not connected to remote"}), 500
 
     try:
-        await _get_active_remote_client().reboot_remote()
+        await _get_active_remote_client().reboot_remote()  # ty:ignore[unresolved-attribute]
         return jsonify({"success": True, "message": "Reboot command sent"}), 200
     except SyncAPIError as e:
         _LOG.error("Failed to reboot remote: %s", e)
@@ -5793,7 +5817,7 @@ async def system_power_off():
         return jsonify({"error": "Not connected to remote"}), 500
 
     try:
-        await _get_active_remote_client().power_off_remote()
+        await _get_active_remote_client().power_off_remote()  # ty:ignore[unresolved-attribute]
         return jsonify({"success": True, "message": "Power off command sent"}), 200
     except SyncAPIError as e:
         _LOG.error("Failed to power off remote: %s", e)
