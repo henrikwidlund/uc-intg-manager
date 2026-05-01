@@ -162,19 +162,32 @@ def _get_active_remote_client() -> RemoteClient | None:
     return None
 
 
+# Resolved on first call so we don't log the same import failure on every call.
+_device_is_remote_online_fn = None
+_device_import_logged = False
+
+
 def is_remote_online(remote_id: str | None) -> bool:
     """Return True if the named remote is currently considered online.
 
-    Imported lazily to avoid an import cycle with device.py.
+    Imported lazily from device.py to avoid an import cycle (device imports
+    web_server at module load time).
     """
+    global _device_is_remote_online_fn, _device_import_logged
     if not remote_id:
         return False
-    try:
-        from device import is_remote_online as _device_is_remote_online
-    except ImportError as e:
-        _LOG.error("Failed to import is_remote_online from device module: %s", e)
-        return False
-    return _device_is_remote_online(remote_id)
+    if _device_is_remote_online_fn is None:
+        try:
+            from device import is_remote_online as fn
+        except Exception as e:
+            if not _device_import_logged:
+                _LOG.error(
+                    "Failed to import is_remote_online from device module: %s", e
+                )
+                _device_import_logged = True
+            return False
+        _device_is_remote_online_fn = fn
+    return _device_is_remote_online_fn(remote_id)
 
 
 def _render_offline_partial() -> str:
