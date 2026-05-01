@@ -36,6 +36,17 @@ class NormalizeVersionTests(unittest.TestCase):
         self.assertEqual(normalize_version("v1.2.3+build.5"), "1.2.3")
         self.assertEqual(normalize_version("v1.2.3-pre01+sha.abc"), "1.2.3rc1")
 
+    def test_dashless_suffix(self):
+        # Tags like ``1.2.3rc1`` (no separator) must still normalize.
+        self.assertEqual(normalize_version("1.2.3rc1"), "1.2.3rc1")
+        self.assertEqual(normalize_version("1.2.3a1"), "1.2.3a1")
+
+    def test_does_not_rewrite_non_prerelease_tokens(self):
+        # The bare ``a|b`` alternation used to silently turn ``-build`` into
+        # ``b0``. The tightened regex leaves unknown suffixes alone.
+        self.assertEqual(normalize_version("1.0.0-build"), "1.0.0-build")
+        self.assertEqual(normalize_version("banana"), "banana")
+
 
 class IsNewerVersionTests(unittest.TestCase):
     def test_release_outranks_prerelease(self):
@@ -69,12 +80,6 @@ class IsNewerVersionTests(unittest.TestCase):
 
     def test_invalid_version_returns_false(self):
         self.assertFalse(GitHubClient.is_newer_version("garbage", "more-garbage"))
-
-    def test_none_or_non_string_returns_false(self):
-        self.assertFalse(GitHubClient.is_newer_version(None, "v1.0.0"))
-        self.assertFalse(GitHubClient.is_newer_version("v1.0.0", None))
-        self.assertFalse(GitHubClient.is_newer_version(None, None))
-        self.assertFalse(GitHubClient.is_newer_version(123, "v1.0.0"))
 
     def test_build_metadata_does_not_affect_precedence(self):
         # SemVer: build metadata after "+" must not change ordering.

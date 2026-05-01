@@ -19,7 +19,7 @@ from packaging.version import InvalidVersion, Version
 from const import GITHUB_API_BASE
 
 _PRE_RELEASE_PATTERN = re.compile(
-    r"[-._]?(alpha|beta|preview|pre|rc|dev|a|b)\.?(\d*)",
+    r"(?:[-._]|(?<=\d))(alpha|beta|preview|pre|rc|dev|a|b)\.?(\d*)(?![A-Za-z])",
     re.IGNORECASE,
 )
 
