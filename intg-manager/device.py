@@ -328,6 +328,7 @@ class IntegrationManagerDevice(PollingDevice):
         ):
             self._web_server.stop()
             self._web_server = None
+            _web_server_instance = None
             _LOG.info("[%s] Web server stopped", self.log_id)
 
         # Close API client
