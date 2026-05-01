@@ -303,37 +303,74 @@
     </div>
 </div>
 
+<!-- Troubleshooting -->
+<div class="mt-8 bg-uc-light-card dark:bg-gray-800 rounded-lg p-6 border border-uc-light-border dark:border-transparent">
+    <h2 class="text-xl font-semibold text-gray-900 dark:text-white mb-1 flex items-center gap-2">
+        <i class="fa-solid fa-wrench w-5 h-5"></i>
+        Troubleshooting
+    </h2>
+    <p class="text-sm text-gray-500 dark:text-gray-400 mb-5">Use this option only if something went wrong during an install or update and you are unable to work due to lock errors in the manager logs.</p>
+
+    <div class="flex items-start gap-4 flex-wrap">
+        <div>
+            <button id="resume-ops-btn"
+                    onclick="resumeOperations()"
+                    class="px-4 py-2 bg-yellow-600 text-white rounded-lg font-medium hover:bg-yellow-700 transition-colors flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+                    disabled>
+                <i class="fa-solid fa-lock-open w-4 h-4"></i>
+                Resume Operations
+            </button>
+            <p id="resume-ops-hint" class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">Checking status...</p>
+        </div>
+        <div id="resume-ops-result" class="flex items-center text-sm mt-2"></div>
+    </div>
+</div>
+
 <script>
-    // Theme selection UI update
-    function updateThemeUI() {
-        const currentTheme = localStorage.getItem('theme') || 'system';
-        console.log('Updating theme UI. Current theme:', currentTheme);
-        
-        // Remove active state from all options
-        document.querySelectorAll('.theme-option').forEach(btn => {
-            btn.classList.remove('border-uc-primary', 'bg-uc-primary/10', 'dark:bg-uc-primary/10');
-            btn.classList.add('border-transparent');
-        });
-        
-        // Add active state to selected option
-        const activeBtn = document.getElementById(`theme-${currentTheme}`);
-        if (activeBtn) {
-            activeBtn.classList.remove('border-transparent');
-            activeBtn.classList.add('border-uc-primary', 'bg-uc-primary/10', 'dark:bg-uc-primary/10');
-            console.log('Set active theme button:', currentTheme);
-        } else {
-            console.warn('Could not find button for theme:', currentTheme);
+    async function checkLockStatus() {
+        try {
+            const resp = await fetch('/api/operation-lock/status');
+            const data = await resp.json();
+            const btn = document.getElementById('resume-ops-btn');
+            const hint = document.getElementById('resume-ops-hint');
+            if (data.locked) {
+                btn.disabled = false;
+                const mins = data.elapsed_seconds !== null ? Math.floor(data.elapsed_seconds / 60) : null;
+                hint.textContent = mins !== null
+                    ? `An operation has been stuck for about ${mins} minute${mins !== 1 ? 's' : ''}. Click to unblock installs and updates.`
+                    : 'An operation appears to be stuck. Click to unblock installs and updates.';
+                hint.classList.add('text-yellow-600', 'dark:text-yellow-400');
+                hint.classList.remove('text-gray-500', 'dark:text-gray-400');
+            } else {
+                btn.disabled = true;
+                hint.textContent = 'No stuck operations detected.';
+                hint.classList.remove('text-yellow-600', 'dark:text-yellow-400');
+                hint.classList.add('text-gray-500', 'dark:text-gray-400');
+            }
+        } catch (e) {
+            document.getElementById('resume-ops-hint').textContent = 'Could not check status.';
         }
     }
-    
-    // Update UI on page load
-    console.log('Settings page theme script loaded');
-    updateThemeUI();
-    
-    // Update UI when theme changes
-    window.addEventListener('themeChanged', (e) => {
-        console.log('themeChanged event received:', e.detail);
-        updateThemeUI();
-    });
+
+    async function resumeOperations() {
+        const btn = document.getElementById('resume-ops-btn');
+        const result = document.getElementById('resume-ops-result');
+        btn.disabled = true;
+        try {
+            const resp = await fetch('/api/operation-lock/release', { method: 'POST' });
+            const data = await resp.json();
+            if (data.status === 'ok' && data.was_locked) {
+                result.innerHTML = '<span class="text-green-600 dark:text-green-400"><i class="fa-solid fa-circle-check mr-1"></i>Operations unblocked.</span>';
+            } else {
+                result.innerHTML = '<span class="text-gray-500 dark:text-gray-400">No lock was active.</span>';
+            }
+        } catch (e) {
+            result.innerHTML = '<span class="text-red-500">Failed to release lock.</span>';
+        }
+        await checkLockStatus();
+    }
+
+    checkLockStatus();
 </script>
+
 {% endblock %}
