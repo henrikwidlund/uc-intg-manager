@@ -6,7 +6,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from github_api import GitHubClient, normalize_version
+from github_api import GitHubClient, normalize_version  # noqa: E402
 
 
 class NormalizeVersionTests(unittest.TestCase):
@@ -80,6 +80,12 @@ class IsNewerVersionTests(unittest.TestCase):
 
     def test_invalid_version_returns_false(self):
         self.assertFalse(GitHubClient.is_newer_version("garbage", "more-garbage"))
+
+    def test_non_pep440_tags_use_numeric_core_fallback(self):
+        # Tags like "1.0.0-build" are not PEP 440 — fall back to numeric core.
+        self.assertTrue(GitHubClient.is_newer_version("1.0.0-build", "1.0.1-build"))
+        self.assertFalse(GitHubClient.is_newer_version("1.0.1-build", "1.0.0-build"))
+        self.assertFalse(GitHubClient.is_newer_version("1.0.0-build", "1.0.0-build"))
 
     def test_build_metadata_does_not_affect_precedence(self):
         # SemVer: build metadata after "+" must not change ordering.

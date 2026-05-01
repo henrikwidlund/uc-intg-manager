@@ -150,7 +150,17 @@
         const parse = (v) => {
             // Drop SemVer build metadata after "+"; it must not affect precedence.
             const s = String(v).replace(/^v/i, '').split('+', 1)[0];
-            let [mainPart, prePart] = s.split('-', 2);
+            // Split on the first "-" only — prerelease identifiers may contain
+            // additional hyphens (e.g. "1.0.0-alpha-beta.1" per SemVer).
+            const dashIdx = s.indexOf('-');
+            let mainPart, prePart;
+            if (dashIdx >= 0) {
+                mainPart = s.slice(0, dashIdx);
+                prePart = s.slice(dashIdx + 1);
+            } else {
+                mainPart = s;
+                prePart = undefined;
+            }
             const segs = mainPart.split('.');
             if (prePart === undefined) {
                 const last = segs[segs.length - 1];

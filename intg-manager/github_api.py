@@ -25,7 +25,15 @@ _PRE_RELEASE_PATTERN = re.compile(
 
 
 def normalize_version(version: str) -> str:
-    """Normalize a GitHub-style tag (e.g. ``v0.0.1-pre01``) to PEP 440."""
+    """Normalize a GitHub-style tag toward PEP 440.
+
+    Strips the optional ``v`` prefix and SemVer ``+build`` metadata, and
+    rewrites known pre-release tokens (``-pre``, ``-alpha``, ``-beta``,
+    ``-rc``, ``-dev``, ``-preview``) into PEP 440 form. Unknown suffixes
+    (e.g. ``-build``) are left untouched, so the result is not guaranteed
+    to be PEP 440-valid for every input. Callers needing ordering should
+    go through ``compare_versions_for_update``.
+    """
     if not version:
         return version
     s = version.lstrip("vV").split("+", 1)[0]
@@ -42,6 +50,43 @@ def normalize_version(version: str) -> str:
         return f"rc{num}"
 
     return _PRE_RELEASE_PATTERN.sub(_repl, s)
+
+
+def _numeric_core(version: str) -> tuple[int, ...]:
+    """Extract the leading dotted numeric segments from a tag.
+
+    Used as a fallback for non-PEP 440 tags (e.g. ``1.0.1-build``) so we can
+    still detect a numeric-core upgrade when ``packaging.version.Version``
+    refuses to parse the input.
+    """
+    if not version:
+        return ()
+    s = version.lstrip("vV").split("+", 1)[0]
+    match = re.match(r"\d+(?:\.\d+)*", s)
+    if not match:
+        return ()
+    return tuple(int(p) for p in match.group(0).split("."))
+
+
+def compare_versions_for_update(current: str, latest: str) -> bool:
+    """Return True when ``latest`` should be offered as an update over ``current``.
+
+    Uses PEP 440 ordering when both inputs normalize cleanly; otherwise falls
+    back to comparing the leading dotted numeric core so non-PEP 440 tags
+    (e.g. ``1.0.1-build``) still trigger updates when their numeric core
+    increases.
+    """
+    try:
+        return Version(normalize_version(latest)) > Version(
+            normalize_version(current)
+        )
+    except (InvalidVersion, TypeError, AttributeError):
+        cur_core = _numeric_core(current) if isinstance(current, str) else ()
+        lat_core = _numeric_core(latest) if isinstance(latest, str) else ()
+        if not cur_core or not lat_core:
+            return False
+        return lat_core > cur_core
+
 
 _LOG = logging.getLogger(__name__)
 
@@ -163,18 +208,14 @@ class GitHubClient:
         Check if the latest version is newer than the current version.
 
         Pre-release tags (``-pre``, ``-alpha``, ``-beta``, ``-rc``, ``-dev``)
-        rank lower than the matching release per PEP 440 / SemVer.
+        rank lower than the matching release per PEP 440 / SemVer. Tags that
+        are not PEP 440-compliant fall back to a numeric-core comparison.
 
         :param current: Current installed version
         :param latest: Latest available version
         :return: True if latest is newer than current
         """
-        try:
-            return Version(normalize_version(latest)) > Version(
-                normalize_version(current)
-            )
-        except (InvalidVersion, TypeError, AttributeError):
-            return False
+        return compare_versions_for_update(current, latest)
 
     async def get_latest_version(self, home_page: str) -> str | None:
         """
