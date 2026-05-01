@@ -323,6 +323,14 @@ class IntegrationManagerDevice(PollingDevice):
             self._connected = False
             _remote_online[self.identifier] = False
             raise
+        except asyncio.TimeoutError as e:
+            self._connected = False
+            _remote_online[self.identifier] = False
+            raise RemoteAPIError("Connection test timed out") from e
+        except Exception as e:
+            self._connected = False
+            _remote_online[self.identifier] = False
+            raise RemoteAPIError(f"Connection test failed: {e}") from e
 
     async def disconnect(self) -> None:
         """Disconnect from the remote."""
@@ -370,6 +378,16 @@ class IntegrationManagerDevice(PollingDevice):
                 _LOG.warning("[%s] Connection verification failed", self.log_id)
         except RemoteAPIError as err:
             _LOG.error("[%s] Connection verification failed: %s", self.log_id, err)
+            self._connected = False
+            _remote_online[self.identifier] = False
+            raise
+        except asyncio.TimeoutError as err:
+            _LOG.error("[%s] Connection verification timed out: %s", self.log_id, err)
+            self._connected = False
+            _remote_online[self.identifier] = False
+            raise
+        except Exception as err:
+            _LOG.error("[%s] Unexpected error during connection verification: %s", self.log_id, err)
             self._connected = False
             _remote_online[self.identifier] = False
             raise

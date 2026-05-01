@@ -4674,22 +4674,13 @@ async def get_active_remote():
         return jsonify({"error": "No active remote"}), 404
 
     config = _remote_configs[remote_id]
-    client = _remote_clients.get(remote_id)
-
-    # Test connection
-    connected = False
-    if client:
-        try:
-            connected = await client.test_connection()
-        except Exception:
-            pass
 
     return jsonify(
         {
             "id": remote_id,
             "name": config.name,
             "address": config.address,
-            "connected": connected,
+            "connected": is_remote_online(remote_id),
         }
     )
 
