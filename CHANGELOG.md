@@ -15,20 +15,14 @@ _Changes in the next release_
 ### Added
 - **Sponsorship links** — Integration and available cards now show a heart button for developers who have set up sponsorship links. Hovering reveals platform options (GitHub Sponsors, Buy Me a Coffee, PayPal, Ko-fi, and more).
 - **Developer homepage links** — The developer name on both installed and available integration cards is now a clickable link to the developer's homepage when one is provided in the registry.
-- **Unused activity entities diagnostic** — The diagnostics page now surfaces activity entities that exist on the remote but are not assigned to any activity, helping identify configuration drift.
-- **Firmware auto-check on diagnostics load** — The diagnostics page now automatically checks for firmware updates when the page loads, without requiring a manual button press.
+- **Unused activity entities diagnostic** — The diagnostics page now surfaces entities that are added to the activity but are not used anywhere inside the activity.
 
 ### Changed
-- **Improved load times** — The available integrations list now caches the registry response in memory for one hour, eliminating a blocking network fetch on every page load. Remote connection checks on the remotes list now run in parallel rather than sequentially.
-- **Developer name placement** — The developer name on available integration cards has moved to directly below the integration name, consistent with the layout on installed integration cards.
+- **Improved load times** — Certain pages now load significantly quicker than before.
 - **Diagnostics page layout** — Diagnostic sections are now collapsible. System Controls have been moved to the bottom of the page. Navigation buttons have correct colors in both light and dark mode.
-- **Dashboard card appearance** — Integration cards on the dashboard use a darker background to distinguish them from the page background, while cards on the integrations page use the standard card color.
-- **Registry schema** — The registry now uses `developers`, `sponsorship_links`, and `homepage` fields in place of the previous `sponsors` and `links` fields.
 
 ### Fixed
 - **Battery/dock restart** — When `shutdown_on_battery` is enabled and the remote is re-docked, the web server now correctly restarts. Previously, stale references left after undocking prevented the server from being created again.
-- **Categories showing raw IDs** — Integration category badges now display human-readable names instead of internal identifier strings.
-- **Orphaned IR codeset empty state** — The "All Good!" message on the orphaned IR codesets diagnostic now renders with correct colors in light mode.
 
 ---
 
