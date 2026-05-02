@@ -14,16 +14,17 @@ _Changes in the next release_
 ## v1.7.0 - 2026-04-30
 ### Added
 - **Sponsorship links** — Integration and available cards now show a heart button for developers who have set up sponsorship links. Hovering reveals platform options (GitHub Sponsors, Buy Me a Coffee, PayPal, Ko-fi, and more).
-- **Developer homepage links** — The developer name on both installed and available integration cards is now a clickable link to the developer's homepage when one is provided in the registry.
 - **Unused activity entities diagnostic** — The diagnostics page now surfaces entities that are added to the activity but are not used anywhere inside the activity.
+- **Offline Remote Improvements** - Remotes that are offline will no longer delay page loading PR/27 Thanks @henrikwidlund!
+- **Developer homepage links** — The developer name on both installed and available integration cards is now a clickable link to the developer's homepage when one is provided in the registry.
+
 
 ### Changed
-- **Improved load times** — Certain pages now load significantly quicker than before.
 - **Diagnostics page layout** — Diagnostic sections are now collapsible. System Controls have been moved to the bottom of the page. Navigation buttons have correct colors in both light and dark mode.
 
 ### Fixed
 - **Battery/dock restart** — When `shutdown_on_battery` is enabled and the remote is re-docked, the web server now correctly restarts. Previously, stale references left after undocking prevented the server from being created again.
-
+- **Improved Version Detection** -- Previously, certain tags on a version would be misinterptred. PR/28 Thanks @henrikwidlund!
 ---
 
 ## v1.6.7 - 2026-04-19
