@@ -14,11 +14,43 @@ import os
 
 from const import RemoteConfig
 from data_migration import migrate
-from device import IntegrationManagerDevice
+from device import IntegrationManagerDevice, _all_remote_configs
 from discover import ManagerDiscovery
 from log_handler import setup_log_handler
 from setup import RemoteSetupFlow
 from ucapi_framework import BaseConfigManager, BaseIntegrationDriver, get_config_path
+
+_LOG = logging.getLogger(__name__)
+
+
+class IntegrationManagerDriver(BaseIntegrationDriver):
+    """
+    Custom driver that handles multi-remote disconnect correctly.
+
+    In external/multi-remote mode, only the owner remote (first in config) has
+    a UC API WebSocket connection to the integration. When the owner remote goes
+    offline and sends a disconnect command, only that device should be disconnected.
+    Other remotes have independent HTTP connections and should keep polling.
+    """
+
+    def _disconnect_owner_only(self, reason: str) -> None:
+        """Disconnect only the owner device (first in config), leaving others running."""
+        owner_id = _all_remote_configs[0].identifier if _all_remote_configs else None
+        _LOG.debug(
+            "%s: disconnecting owner device only (%s)", reason, owner_id
+        )
+        for device_id, device in self._device_instances.items():
+            if device_id == owner_id:
+                self._loop.create_task(device.disconnect())
+                break
+
+    async def on_r2_disconnect_cmd(self) -> None:
+        """Disconnect only the owner device, not all remotes."""
+        self._disconnect_owner_only("Client disconnect command")
+
+    async def on_r2_enter_standby(self) -> None:
+        """Disconnect only the owner device when it enters standby."""
+        self._disconnect_owner_only("Enter standby event")
 
 
 async def main():
@@ -46,7 +78,7 @@ async def main():
 
     # Initialize the integration driver
     # This integration doesn't expose entities - it's purely a web UI
-    driver = BaseIntegrationDriver(
+    driver = IntegrationManagerDriver(
         device_class=IntegrationManagerDevice,
         entity_classes=[],  # No entities exposed
         driver_id="intg_manager_driver",

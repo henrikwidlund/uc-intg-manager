@@ -165,33 +165,22 @@ def _get_active_remote_client() -> RemoteClient | None:
     return None
 
 
-# Resolved on first call so we don't log the same import failure on every call.
-_device_is_remote_online_fn = None
-_device_import_logged = False
+# ---------------------------------------------------------------------------
+# Remote online status — updated by device.py via set_remote_online()
+# ---------------------------------------------------------------------------
+_remote_online: dict[str, bool] = {}
+
+
+def set_remote_online(remote_id: str, online: bool) -> None:
+    """Called by device.py to push connectivity changes into the web server."""
+    _remote_online[remote_id] = online
 
 
 def is_remote_online(remote_id: str | None) -> bool:
-    """Return True if the named remote is currently considered online.
-
-    Imported lazily from device.py to avoid an import cycle (device imports
-    web_server at module load time).
-    """
-    global _device_is_remote_online_fn, _device_import_logged
+    """Return True if the named remote is currently considered online."""
     if not remote_id:
         return False
-    if _device_is_remote_online_fn is None:
-        try:
-            from device import is_remote_online as fn
-            _device_is_remote_online_fn = fn
-        except Exception as e:
-            if not _device_import_logged:
-                _LOG.error(
-                    "Failed to import is_remote_online from device module: %s", e
-                )
-                _device_import_logged = True
-            _device_is_remote_online_fn = lambda _rid: False  # noqa: E731
-            return False
-    return _device_is_remote_online_fn(remote_id)
+    return _remote_online.get(remote_id, False)
 
 
 def _render_offline_partial() -> str:
@@ -6495,7 +6484,9 @@ class WebServer:
         Check all integrations for error states and send notifications.
 
         This is called periodically to detect integrations that have entered
-        error or disconnected states.
+        error or disconnected states. Also updates the remote's online status
+        so the UI banner reflects actual connectivity, not just the last
+        WebSocket lifecycle event.
 
         :param remote_id: Remote identifier to check error states for
         """
@@ -6504,11 +6495,16 @@ class WebServer:
             return
 
         try:
+            is_online = await client.test_connection()
+            set_remote_online(remote_id, is_online)
+            if not is_online:
+                return
             # This will trigger error state notifications automatically
             await _get_installed_integrations(remote_id)
             # _LOG.debug("[%s] Error state check complete", remote_id)
         except Exception as e:
             _LOG.warning("[%s] Failed to check error states: %s", remote_id, e)
+            set_remote_online(remote_id, False)
 
     async def check_new_integrations(self, remote_id: str) -> None:
         """
