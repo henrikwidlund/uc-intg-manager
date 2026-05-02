@@ -25,7 +25,7 @@ from const import (
     REPO_CACHE_VALIDITY,
     MANAGER_DATA_FILE,
 )
-from packaging.version import InvalidVersion, Version
+from github_api import compare_versions_for_update
 from ucapi_framework import find_orphaned_entities
 from ucapi_framework.helpers import find_unused_activity_entities
 
@@ -836,12 +836,7 @@ class GitHubClient:
     @staticmethod
     def compare_versions(current: str, latest: str) -> bool:
         """Check if latest version is newer than current."""
-        try:
-            current_clean = re.sub(r"^[vV]", "", current).split("-")[0].split("+")[0]
-            latest_clean = re.sub(r"^[vV]", "", latest).split("-")[0].split("+")[0]
-            return Version(latest_clean) > Version(current_clean)
-        except (InvalidVersion, TypeError, AttributeError):
-            return False
+        return compare_versions_for_update(current, latest)
 
 
 class _SyncGitHubClient:
