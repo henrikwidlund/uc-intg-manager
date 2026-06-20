@@ -11,10 +11,11 @@ the driver, sets up logging, and starts the integration API.
 import asyncio
 import logging
 import os
+import socket
 
 import ucapi
 import device as _device_module
-from const import RemoteConfig, is_external_mode
+from const import RemoteConfig, WEB_SERVER_PORT, is_external_mode
 from data_migration import migrate
 from device import IntegrationManagerDevice, _all_remote_configs
 from discover import ManagerDiscovery
@@ -149,6 +150,24 @@ class IntegrationManagerDriver(BaseIntegrationDriver):
             await ws.check_all_remote_connectivity()
 
 
+def _web_server_port_reachable(port: int = WEB_SERVER_PORT, timeout: float = 2.0) -> bool:
+    """Return True if a TCP connect to 127.0.0.1:port succeeds.
+
+    The watchdog uses this in addition to the `is_running` flag because
+    Hypercorn can stop serving (deadlock, stuck loop, blocked thread)
+    without flipping `_running` to False. The flag-only check would then
+    keep reporting "healthy" while the UI is dead.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.settimeout(timeout)
+        return sock.connect_ex(("127.0.0.1", port)) == 0
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
 async def _web_server_watchdog(interval: float = 30) -> None:
     """In external mode, keep the web server alive and remote-status fresh,
     independent of polling.
@@ -159,7 +178,9 @@ async def _web_server_watchdog(interval: float = 30) -> None:
     state by itself. This task:
 
       * respawns the web server when its background thread exits
-        (`_running` flipped False) or the instance was cleared, and
+        (`_running` flipped False), the instance was cleared, or the
+        listening port stops accepting connections even though the
+        flag still reads True, and
       * probes every configured remote so the UI shows a real online
         status even when no device has called `establish_connection`
         yet.
@@ -173,10 +194,20 @@ async def _web_server_watchdog(interval: float = 30) -> None:
                 await asyncio.sleep(interval)
                 continue
             ws = _device_module._web_server_instance
-            if ws is None or not ws.is_running:
+            # The port-reachability check runs in a worker thread because
+            # `socket.connect_ex` is blocking; a 2-second hang on the
+            # event loop would starve other tasks every watchdog cycle.
+            port_alive = (
+                await asyncio.to_thread(_web_server_port_reachable)
+                if ws is not None
+                else False
+            )
+            if ws is None or not ws.is_running or not port_alive:
                 _LOG.warning(
-                    "Watchdog: web server not running (instance=%s) - restarting",
+                    "Watchdog: web server unhealthy (instance=%s, running=%s, port_alive=%s) - restarting",
                     "present" if ws else "missing",
+                    getattr(ws, "is_running", False),
+                    port_alive,
                 )
                 if ws is not None:
                     try:

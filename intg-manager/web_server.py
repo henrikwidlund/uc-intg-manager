@@ -182,11 +182,20 @@ def get_active_remote_id() -> str | None:
 
 
 def _get_active_remote_client() -> RemoteClient | None:
-    """Get the RemoteClient for the currently active remote."""
+    """Get the RemoteClient for the currently active remote.
+
+    Returns None when the active remote is known to be offline so that web
+    routes short-circuit through their existing `if not client:` fallback
+    instead of issuing an HTTP request that will hang for the full
+    REQUEST_TIMEOUT (40s) waiting on a sleeping/powered-off remote. The
+    UI then stays responsive even when the active remote is unreachable.
+    """
     remote_id = get_active_remote_id()
-    if remote_id:
-        return _remote_clients.get(remote_id)
-    return None
+    if not remote_id:
+        return None
+    if not is_remote_online(remote_id):
+        return None
+    return _remote_clients.get(remote_id)
 
 
 # ---------------------------------------------------------------------------
