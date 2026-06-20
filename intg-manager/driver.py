@@ -117,18 +117,27 @@ class IntegrationManagerDriver(BaseIntegrationDriver):
 
 
 async def _web_server_watchdog(interval: float = 30) -> None:
-    """In external mode, keep the web server alive independent of polling.
+    """In external mode, keep the web server alive and remote-status fresh,
+    independent of polling.
 
-    Polling stops when a remote disconnects/standbys, so the per-poll
-    health check in device.py can't recover a dead Hypercorn thread by
-    itself. This task watches the global instance and respawns it whenever
-    the background server thread has exited (``_running`` flipped False)
-    or the instance was cleared.
+    Polling stops when a remote disconnects/standbys (or hasn't connected
+    yet after a process restart), so the per-poll health check in
+    device.py can't recover a dead Hypercorn thread or seed connectivity
+    state by itself. This task:
+
+      * respawns the web server when its background thread exits
+        (``_running`` flipped False) or the instance was cleared, and
+      * probes every configured remote so the UI shows a real online
+        status even when no device has called ``establish_connection``
+        yet.
     """
+    # Brief delay so the eagerly-started server has time to bind before
+    # the first probe runs.
+    await asyncio.sleep(2)
     while True:
         try:
-            await asyncio.sleep(interval)
             if not _all_remote_configs:
+                await asyncio.sleep(interval)
                 continue
             ws = _device_module._web_server_instance
             if ws is None or not ws.is_running:
@@ -147,13 +156,23 @@ async def _web_server_watchdog(interval: float = 30) -> None:
                 await asyncio.sleep(0.5)
                 if new_ws.is_running:
                     _LOG.info("Watchdog: web server restarted successfully")
+                    ws = new_ws
                 else:
                     _LOG.error("Watchdog: restart attempt failed - will retry")
                     _device_module._web_server_instance = None
+                    continue
+
+            # Heartbeat probe — keeps `_remote_online` truthful while
+            # polling is idle (no remote connected, just-restarted process).
+            try:
+                await ws.check_all_remote_connectivity()
+            except Exception as e:
+                _LOG.debug("Watchdog connectivity probe failed: %s", e)
         except asyncio.CancelledError:
             raise
         except Exception as e:
             _LOG.error("Watchdog loop error: %s", e, exc_info=True)
+        await asyncio.sleep(interval)
 
 
 async def main():
