@@ -23,6 +23,7 @@ from const import (
     VERSION_CHECK_INTERVAL_POLLS,
     WEB_SERVER_PORT,
     MANAGER_DATA_FILE,
+    is_external_mode,
 )
 from remote_api import RemoteAPIClient, RemoteAPIError
 from web_server import (
@@ -264,13 +265,11 @@ class IntegrationManagerDevice(PollingDevice):
                         "[%s] Could not fetch firmware version: %s", self.log_id, e
                     )
 
-                # Check if we're running in external mode
-                # UC_CONFIG_HOME is set by the UC Remote when running as an integration
-                # - Not set: Running externally on Mac/PC for development
-                # - Set to /config: Running in Docker
-                # - Set to something else: Running ON the remote itself
+                # Check if we're running in external mode (Docker, PC, Mac, server)
+                # vs. as an integration on the UC Remote itself. See is_external_mode()
+                # for the full detection logic (env override, container markers, UC_CONFIG_HOME).
+                self._is_external = is_external_mode()
                 config_home = os.getenv("UC_CONFIG_HOME", "")
-                self._is_external = not config_home or config_home.startswith("/config")
 
                 if self._is_external:
                     # Running externally (Docker, PC, Mac, etc.) - always start web server
@@ -510,18 +509,20 @@ class IntegrationManagerDevice(PollingDevice):
         global _web_server_instance
 
         try:
-            # In external mode, check if web server is already running globally
+            # In external mode, the web server may already be running globally
+            # (e.g., started eagerly at driver boot, or by a sibling remote that
+            # connected earlier). Reuse it and run this remote's initial checks.
             if (
                 self._is_external
                 and _web_server_instance
                 and _web_server_instance.is_running
             ):
                 _LOG.info(
-                    "[%s] Web server already running in external mode - skipping start",
+                    "[%s] Web server already running in external mode - reusing",
                     self.log_id,
                 )
-                # Set local reference to global instance
                 self._web_server = _web_server_instance
+                await self._run_initial_integration_checks()
                 return
 
             # In remote mode, only the owner (first in config) starts the web server
@@ -567,34 +568,7 @@ class IntegrationManagerDevice(PollingDevice):
 
                 if self._web_server.is_running:
                     _LOG.info("[%s] Web server started successfully", self.log_id)
-
-                    # Trigger initial checks on startup
-                    _LOG.info(
-                        "[%s] Triggering initial integration checks...", self.log_id
-                    )
-                    try:
-                        # Per-remote: Check for version updates
-                        await self._web_server.refresh_integration_versions(
-                            self.identifier
-                        )
-
-                        # Per-remote: Check for new integrations in registry
-                        await self._web_server.check_new_integrations(self.identifier)
-
-                        # Per-remote: Check for orphaned entities in activities
-                        await self._web_server.check_orphaned_entities(self.identifier)
-
-                        # Shared (owner only): Check for new system messages from GitHub
-                        if self._is_owner():
-                            self._web_server.check_system_messages()
-
-                        _LOG.info(
-                            "[%s] Initial integration checks complete", self.log_id
-                        )
-                    except Exception as e:
-                        _LOG.warning(
-                            "[%s] Initial integration checks failed: %s", self.log_id, e
-                        )
+                    await self._run_initial_integration_checks()
                 else:
                     _LOG.error(
                         "[%s] Web server failed to start (check logs for port conflicts)",
@@ -606,6 +580,28 @@ class IntegrationManagerDevice(PollingDevice):
                 "[%s] Failed to start web server: %s", self.log_id, e, exc_info=True
             )
             self._web_server = None
+
+    async def _run_initial_integration_checks(self) -> None:
+        """Trigger per-remote startup checks once the web server is available."""
+        if not self._web_server:
+            return
+
+        _LOG.info("[%s] Triggering initial integration checks...", self.log_id)
+        try:
+            # Per-remote: version updates
+            await self._web_server.refresh_integration_versions(self.identifier)
+            # Per-remote: new integrations in registry
+            await self._web_server.check_new_integrations(self.identifier)
+            # Per-remote: orphaned entities in activities
+            await self._web_server.check_orphaned_entities(self.identifier)
+            # Shared (owner only): system messages from GitHub
+            if self._is_owner():
+                self._web_server.check_system_messages()
+            _LOG.info("[%s] Initial integration checks complete", self.log_id)
+        except Exception as e:
+            _LOG.warning(
+                "[%s] Initial integration checks failed: %s", self.log_id, e
+            )
 
     async def _on_undocked(self) -> None:
         """Handle remote being undocked/unplugged - conditionally stop web server."""

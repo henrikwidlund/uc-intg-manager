@@ -204,6 +204,7 @@ services:
 |----------|-------------|---------|----------|
 | `UC_INTG_MANAGER_HTTP_PORT` | HTTP port for Integration Manager Web Server | `9999` | No|
 | `UC_CONFIG_HOME` | Configuration directory path | `/config` | No |
+| `UC_INTG_MANAGER_EXTERNAL` | Force external/Docker mode (`1`/`true`/`yes`/`on` to enable, `0`/`false` to disable). Auto-detected from container markers and `UC_CONFIG_HOME` when unset. | _(auto)_ | No |
 | `UC_INTEGRATION_INTERFACE` | Network interface to bind integration API | `0.0.0.0` | No |
 | `UC_INTEGRATION_HTTP_PORT` | HTTP port for integration API | `9090` | No |
 

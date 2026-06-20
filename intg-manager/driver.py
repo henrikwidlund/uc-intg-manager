@@ -12,45 +12,97 @@ import asyncio
 import logging
 import os
 
+import ucapi
 import device as _device_module
-from const import RemoteConfig
+from const import RemoteConfig, is_external_mode
 from data_migration import migrate
 from device import IntegrationManagerDevice, _all_remote_configs
 from discover import ManagerDiscovery
 from log_handler import setup_log_handler
 from setup import RemoteSetupFlow
 from ucapi_framework import BaseConfigManager, BaseIntegrationDriver, get_config_path
+from web_server import WebServer
 
 _LOG = logging.getLogger(__name__)
 
 
+def _remote_id_from_ws(websocket) -> str | None:
+    """Map an inbound ucapi WebSocket to the identifier of the configured remote
+    whose IP matches the client's remote_address. Returns None if no match (or
+    no websocket was supplied — e.g., legacy ucapi releases that don't forward
+    the kwarg)."""
+    if not websocket or not getattr(websocket, "remote_address", None):
+        return None
+    host = websocket.remote_address[0]
+    for cfg in _all_remote_configs:
+        if cfg.address == host:
+            return cfg.identifier
+    return None
+
+
 class IntegrationManagerDriver(BaseIntegrationDriver):
     """
-    Custom driver that handles multi-remote disconnect correctly.
+    Custom driver that dispatches connect/disconnect/standby events to the
+    specific remote that originated them, instead of fanning out to every
+    configured device.
 
-    In external/multi-remote mode, only the owner remote (first in config) has
-    a UC API WebSocket connection to the integration. When the owner remote goes
-    offline and sends a disconnect command, only that device should be disconnected.
-    Other remotes have independent HTTP connections and should keep polling.
+    Each Remote opens its own ucapi WebSocket to this integration. Recent ucapi
+    releases forward the originating WebSocket as a ``websocket`` kwarg to event
+    handlers (see ``ucapi.api._wrap_event_listener``), letting us look up the
+    remote by client IP. If the kwarg is missing (older ucapi or unidentifiable
+    client), we fall back to conservative defaults:
+
+      * connect / exit-standby without source  → reconnect ALL configured remotes
+      * disconnect / enter-standby without source → no-op (avoid mass disconnects)
     """
 
-    def _disconnect_owner_only(self, reason: str) -> None:
-        """Disconnect only the owner device (first in config), leaving others running."""
-        owner_id = _all_remote_configs[0].identifier if _all_remote_configs else None
-        _LOG.debug("%s: disconnecting owner device only (%s)", reason, owner_id)
-        for device_id, device in self._device_instances.items():
-            if device_id == owner_id:
-                self._loop.create_task(device.disconnect())
-                break
-
-    async def on_r2_connect_cmd(self) -> None:
-        """Connect all devices, then immediately recheck all remote connectivity."""
-        await super().on_r2_connect_cmd()
+    async def on_r2_connect_cmd(self, websocket=None) -> None:
+        """Connect the originating remote (or all, if source unknown)."""
+        await self.api.set_device_state(ucapi.DeviceStates.CONNECTED)
+        rid = _remote_id_from_ws(websocket)
+        device = self._device_instances.get(rid) if rid else None
+        if device:
+            _LOG.debug("Connect command from %s", rid)
+            self._loop.create_task(device.connect())
+        else:
+            _LOG.debug("Connect command without identifiable source - connecting all")
+            for d in self._device_instances.values():
+                self._loop.create_task(d.connect())
         self._loop.create_task(self._recheck_all_connectivity(delay=3))
 
-    async def on_r2_exit_standby(self) -> None:
-        """Reconnect all devices, then immediately recheck all remote connectivity."""
-        await super().on_r2_exit_standby()
+    async def on_r2_disconnect_cmd(self, websocket=None) -> None:
+        """Disconnect only the originating remote."""
+        rid = _remote_id_from_ws(websocket)
+        device = self._device_instances.get(rid) if rid else None
+        if device:
+            _LOG.debug("Disconnect command from %s", rid)
+            self._loop.create_task(device.disconnect())
+        else:
+            _LOG.debug("Disconnect command without identifiable source - ignoring")
+
+    async def on_r2_enter_standby(self, websocket=None) -> None:
+        """Disconnect only the remote that entered standby."""
+        rid = _remote_id_from_ws(websocket)
+        device = self._device_instances.get(rid) if rid else None
+        if device:
+            _LOG.debug("Enter standby from %s", rid)
+            self._loop.create_task(device.disconnect())
+        else:
+            _LOG.debug("Enter standby without identifiable source - ignoring")
+
+    async def on_r2_exit_standby(self, websocket=None) -> None:
+        """Reconnect the originating remote (or all, if source unknown)."""
+        rid = _remote_id_from_ws(websocket)
+        device = self._device_instances.get(rid) if rid else None
+        if device:
+            _LOG.debug("Exit standby from %s", rid)
+            self._loop.create_task(device.connect())
+        else:
+            _LOG.debug(
+                "Exit standby without identifiable source - reconnecting all"
+            )
+            for d in self._device_instances.values():
+                self._loop.create_task(d.connect())
         self._loop.create_task(self._recheck_all_connectivity(delay=3))
 
     async def _recheck_all_connectivity(self, delay: float = 3) -> None:
@@ -63,13 +115,45 @@ class IntegrationManagerDriver(BaseIntegrationDriver):
             )
             await ws.check_all_remote_connectivity()
 
-    async def on_r2_disconnect_cmd(self) -> None:
-        """Disconnect only the owner device, not all remotes."""
-        self._disconnect_owner_only("Client disconnect command")
 
-    async def on_r2_enter_standby(self) -> None:
-        """Disconnect only the owner device when it enters standby."""
-        self._disconnect_owner_only("Enter standby event")
+async def _web_server_watchdog(interval: float = 30) -> None:
+    """In external mode, keep the web server alive independent of polling.
+
+    Polling stops when a remote disconnects/standbys, so the per-poll
+    health check in device.py can't recover a dead Hypercorn thread by
+    itself. This task watches the global instance and respawns it whenever
+    the background server thread has exited (``_running`` flipped False)
+    or the instance was cleared.
+    """
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            if not _all_remote_configs:
+                continue
+            ws = _device_module._web_server_instance
+            if ws is None or not ws.is_running:
+                _LOG.warning(
+                    "Watchdog: web server not running (instance=%s) - restarting",
+                    "present" if ws else "missing",
+                )
+                if ws is not None:
+                    try:
+                        ws.stop()
+                    except Exception as e:
+                        _LOG.warning("Watchdog: stop() during cleanup failed: %s", e)
+                new_ws = WebServer(remote_configs=_all_remote_configs)
+                _device_module._web_server_instance = new_ws
+                new_ws.start()
+                await asyncio.sleep(0.5)
+                if new_ws.is_running:
+                    _LOG.info("Watchdog: web server restarted successfully")
+                else:
+                    _LOG.error("Watchdog: restart attempt failed - will retry")
+                    _device_module._web_server_instance = None
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            _LOG.error("Watchdog loop error: %s", e, exc_info=True)
 
 
 async def main():
@@ -113,6 +197,24 @@ async def main():
 
     # Register all configured devices from config file
     await driver.register_all_configured_devices()
+
+    # In external/Docker mode, start the web server eagerly at boot so the UI
+    # stays reachable even when no remote has connected yet (e.g., container
+    # restarted while every configured remote is asleep). On-remote installs
+    # rely on dock/charge state instead and start the web server lazily.
+    if is_external_mode() and _all_remote_configs:
+        _LOG.info(
+            "External mode detected at boot - starting web server with %d configured remote(s)",
+            len(_all_remote_configs),
+        )
+        ws = WebServer(remote_configs=_all_remote_configs)
+        _device_module._web_server_instance = ws
+        ws.start()
+
+        # Independent watchdog that respawns the web server if its background
+        # thread dies (Hypercorn crash, OS error, etc.). Lives for the lifetime
+        # of the driver process.
+        asyncio.create_task(_web_server_watchdog(interval=30))
 
     # Set up the setup handler
     discovery = ManagerDiscovery("_uc-remote._tcp.local.", timeout=3)

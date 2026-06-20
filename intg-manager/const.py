@@ -32,6 +32,51 @@ def _get_data_dir():
 
 DATA_DIR = _get_data_dir()
 
+
+def is_external_mode() -> bool:
+    """
+    Detect whether the integration is running externally (Docker, PC, Mac, server)
+    versus on the Unfolded Circle Remote itself.
+
+    External mode means the web server should always run and never be shut down
+    on standby/undock/disconnect, because the host is independent of any remote.
+
+    Detection order:
+      1. UC_INTG_MANAGER_EXTERNAL env var (explicit override, truthy/falsy)
+      2. /.dockerenv file (rootful Docker)
+      3. /proc/1/cgroup contains a known container runtime marker
+         (rootless Docker, Podman, containerd, Kubernetes, LXC)
+      4. UC_CONFIG_HOME unset (local dev on Mac/PC)
+      5. UC_CONFIG_HOME starts with "/config" (documented Docker convention)
+      6. Otherwise: assume running on the remote itself
+    """
+    override = os.environ.get("UC_INTG_MANAGER_EXTERNAL")
+    if override is not None:
+        return override.strip().lower() in ("1", "true", "yes", "on")
+
+    if os.path.exists("/.dockerenv"):
+        return True
+
+    try:
+        with open("/proc/1/cgroup", "r", encoding="utf-8") as f:
+            cgroup = f.read()
+        if any(
+            marker in cgroup
+            for marker in ("docker", "containerd", "podman", "kubepods", "/lxc/")
+        ):
+            return True
+    except OSError:
+        pass
+
+    config_home = os.environ.get("UC_CONFIG_HOME", "")
+    if not config_home:
+        return True
+    if config_home.startswith("/config"):
+        return True
+
+    return False
+
+
 # Manager data file - stores settings, integration backups, and other persistent data
 MANAGER_DATA_FILE = os.path.join(DATA_DIR, "manager.json")
 
