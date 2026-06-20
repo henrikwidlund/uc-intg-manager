@@ -45,6 +45,7 @@ from const import (
     RemoteConfig,
     Settings,
     UIPreferences,
+    is_external_mode,
 )
 from data_migration import migrate as migrate_v1_to_v2
 from quart import (
@@ -5082,9 +5083,9 @@ async def settings_page():
     """Render the settings page."""
     settings = Settings.load(remote_id=get_active_remote_id())
     ui_prefs = UIPreferences.load()
-    # Detect if running in Docker/external mode
+    # Detect if running in external mode (Docker, server, or local dev)
+    is_external = is_external_mode()
     uc_config_home = os.getenv("UC_CONFIG_HOME", "")
-    is_external = uc_config_home.startswith("/config")
     _LOG.info(
         f"Settings page: UC_CONFIG_HOME='{uc_config_home}', is_external={is_external}"
     )
