@@ -182,13 +182,11 @@ def get_active_remote_id() -> str | None:
 
 
 def _get_active_remote_client() -> RemoteClient | None:
-    """Get the RemoteClient for the currently active remote, or None if offline."""
+    """Get the RemoteClient for the currently active remote."""
     remote_id = get_active_remote_id()
-    if not remote_id:
-        return None
-    if not is_remote_online(remote_id):
-        return None
-    return _remote_clients.get(remote_id)
+    if remote_id:
+        return _remote_clients.get(remote_id)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -4429,6 +4427,10 @@ async def self_update():
     """
     if not _get_active_remote_client() or not _github_client:
         return jsonify({"status": "error", "message": "Service not initialized"}), 500
+    if not is_remote_online(get_active_remote_id()):
+        return jsonify(
+            {"status": "error", "message": "Remote is offline"}
+        ), 503
 
     form = await request.form
     version = request.args.get("version") or form.get("version")
@@ -7067,10 +7069,13 @@ class WebServer:
         remote_ids = list(_remote_clients.keys())
         if not remote_ids:
             return
-        await asyncio.gather(
+        results = await asyncio.gather(
             *(self.check_connectivity(rid) for rid in remote_ids),
             return_exceptions=True,
         )
+        for rid, result in zip(remote_ids, results):
+            if isinstance(result, BaseException):
+                _LOG.warning("[%s] Connectivity probe raised: %r", rid, result)
 
     async def check_error_states(self, remote_id: str) -> None:
         """

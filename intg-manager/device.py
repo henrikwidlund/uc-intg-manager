@@ -9,6 +9,7 @@ It manages connections, polls power status, and controls the web server.
 
 import logging
 import os
+import socket
 import json
 from asyncio import AbstractEventLoop
 from datetime import datetime
@@ -20,6 +21,7 @@ from const import (
     Settings,
     POWER_POLL_INTERVAL,
     VERSION_CHECK_INTERVAL_POLLS,
+    WEB_SERVER_PORT,
     MANAGER_DATA_FILE,
     is_external_mode,
 )
@@ -428,6 +430,8 @@ class IntegrationManagerDevice(PollingDevice):
             poll_tasks.append("repo-batch")
         poll_tasks.append("backup-check")
         poll_tasks.append("error-states")
+        if self._is_owner() and not self._is_external:
+            poll_tasks.append("health-check")
 
         tasks_str = ", ".join(poll_tasks) if poll_tasks else "dock-status-only"
         _LOG.debug(
@@ -489,6 +493,11 @@ class IntegrationManagerDevice(PollingDevice):
                 else:
                     await web_server.check_connectivity(self.identifier)
                     await web_server.check_error_states(self.identifier)
+
+            # On-remote mode: per-poll restart probe. External mode uses
+            # the driver-level watchdog instead (see driver._web_server_watchdog).
+            if not self._is_external:
+                await self._check_web_server_health()
 
         except RemoteAPIError as e:
             _LOG.warning("[%s] Failed to poll power status: %s", self.log_id, e)
@@ -782,6 +791,69 @@ class IntegrationManagerDevice(PollingDevice):
 
         except Exception as e:
             _LOG.error("[%s] Error during scheduled backup: %s", self.log_id, e)
+
+    async def _check_web_server_health(self) -> None:
+        """Restart the local web server if it should be running but is not accessible.
+
+        On-remote mode only — external mode uses the driver-level watchdog.
+        """
+        global _web_server_instance
+
+        web_server = _web_server_instance
+        if not self._is_owner() or not web_server or not web_server.is_running:
+            return
+
+        if self._is_docked or not self._settings.shutdown_on_battery:
+            should_be_running = True
+        else:
+            should_be_running = False
+
+        if not should_be_running:
+            return
+
+        # TCP probe to confirm the server is actually accepting connections.
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.settimeout(2)
+            if sock.connect_ex(("127.0.0.1", WEB_SERVER_PORT)) == 0:
+                return
+        except OSError as e:
+            _LOG.warning(
+                "[%s] Web server health probe failed: %s - attempting restart",
+                self.log_id,
+                e,
+            )
+        finally:
+            sock.close()
+
+        _LOG.warning(
+            "[%s] Web server not accessible on port %d - attempting restart",
+            self.log_id,
+            WEB_SERVER_PORT,
+        )
+        try:
+            try:
+                web_server.stop()
+            except Exception as e:
+                _LOG.warning("[%s] Error stopping unhealthy web server: %s", self.log_id, e)
+            await asyncio.sleep(1)
+            new_server = WebServer(remote_configs=_all_remote_configs)
+            new_server.start()
+            await asyncio.sleep(0.5)
+            if new_server.is_running:
+                _LOG.info("[%s] Web server successfully restarted", self.log_id)
+                _web_server_instance = new_server
+                self._web_server = new_server
+            else:
+                _LOG.error("[%s] Web server failed to restart", self.log_id)
+                _web_server_instance = None
+                self._web_server = None
+        except Exception as e:
+            _LOG.error(
+                "[%s] Failed to restart web server: %s", self.log_id, e, exc_info=True
+            )
+            _web_server_instance = None
+            self._web_server = None
 
     # =========================================================================
     # Command Handling

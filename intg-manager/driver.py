@@ -186,8 +186,12 @@ async def _web_server_watchdog(interval: float = 30) -> None:
                     _LOG.info("Watchdog: web server restarted successfully")
                     ws = new_ws
                 else:
-                    _LOG.error("Watchdog: restart attempt failed - will retry")
+                    _LOG.error(
+                        "Watchdog: restart attempt failed - retrying in %ds",
+                        interval,
+                    )
                     _device_module._web_server_instance = None
+                    await asyncio.sleep(interval)
                     continue
 
             try:
