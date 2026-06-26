@@ -9,7 +9,6 @@ It manages connections, polls power status, and controls the web server.
 
 import logging
 import os
-import socket
 import json
 from asyncio import AbstractEventLoop
 from datetime import datetime
@@ -21,7 +20,6 @@ from const import (
     Settings,
     POWER_POLL_INTERVAL,
     VERSION_CHECK_INTERVAL_POLLS,
-    WEB_SERVER_PORT,
     MANAGER_DATA_FILE,
     is_external_mode,
 )
@@ -430,8 +428,6 @@ class IntegrationManagerDevice(PollingDevice):
             poll_tasks.append("repo-batch")
         poll_tasks.append("backup-check")
         poll_tasks.append("error-states")
-        if self._is_owner():
-            poll_tasks.append("health-check")
 
         tasks_str = ", ".join(poll_tasks) if poll_tasks else "dock-status-only"
         _LOG.debug(
@@ -493,9 +489,6 @@ class IntegrationManagerDevice(PollingDevice):
                 else:
                     await web_server.check_connectivity(self.identifier)
                     await web_server.check_error_states(self.identifier)
-
-            # Web server health check - verify server is actually accessible when it should be running
-            await self._check_web_server_health()
 
         except RemoteAPIError as e:
             _LOG.warning("[%s] Failed to poll power status: %s", self.log_id, e)
@@ -789,116 +782,6 @@ class IntegrationManagerDevice(PollingDevice):
 
         except Exception as e:
             _LOG.error("[%s] Error during scheduled backup: %s", self.log_id, e)
-
-    async def _check_web_server_health(self) -> None:
-        """
-        Check if the web server is healthy and restart if needed.
-
-        This verifies that the web server is actually accessible when it should be running.
-        If the server is supposed to be running but is not responding, it performs cleanup
-        and restarts the server.
-
-        Called during each poll cycle when the web server should be active.
-        """
-        global _web_server_instance
-
-        # Use global web server instance
-        web_server = _web_server_instance
-
-        # Only the web server owner should perform health checks
-        if not self._is_owner() or not web_server or not web_server.is_running:
-            return
-
-        # Determine if web server should actually be running based on current conditions
-        should_be_running = False
-
-        if self._is_external:
-            # External/Docker mode - always running
-            should_be_running = True
-        elif self._is_docked:
-            # Docked - always running
-            should_be_running = True
-        elif not self._settings.shutdown_on_battery:
-            # On battery but configured to keep running
-            should_be_running = True
-
-        if not should_be_running:
-            return  # Server should not be running, skip health check
-
-        # Test if server is actually accessible
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(2)  # 2 second timeout
-            result = sock.connect_ex(("127.0.0.1", WEB_SERVER_PORT))
-            sock.close()
-
-            if result == 0:
-                # Server is accessible
-                return
-
-            # Server is not accessible but should be running
-            _LOG.warning(
-                "[%s] Web server should be running but is not accessible on port %d - attempting restart",
-                self.log_id,
-                WEB_SERVER_PORT,
-            )
-
-        except Exception as e:
-            _LOG.warning(
-                "[%s] Failed to check web server health: %s - attempting restart",
-                self.log_id,
-                e,
-            )
-
-        # Server is not healthy - perform cleanup and restart
-        try:
-            # Stop the current server instance (cleanup)
-            if web_server:
-                try:
-                    web_server.stop()
-                except Exception as e:
-                    _LOG.warning(
-                        "[%s] Error stopping unhealthy web server: %s", self.log_id, e
-                    )
-
-            await asyncio.sleep(1)
-
-            # Create new server instance
-            new_server = WebServer(
-                remote_configs=_all_remote_configs,
-            )
-
-            # Start the server
-            new_server.start()
-
-            # Give it a moment to start
-            await asyncio.sleep(0.5)
-
-            if new_server.is_running:
-                _LOG.info(
-                    "[%s] Web server successfully restarted after health check failure",
-                    self.log_id,
-                )
-                # Update both global and local references
-                _web_server_instance = new_server
-                self._web_server = new_server
-            else:
-                _LOG.error(
-                    "[%s] Web server failed to restart after health check failure",
-                    self.log_id,
-                )
-                _web_server_instance = None
-                self._web_server = None
-
-        except Exception as e:
-            _LOG.error(
-                "[%s] Failed to restart web server during health check: %s",
-                self.log_id,
-                e,
-                exc_info=True,
-            )
-            _web_server_instance = None
-            self._web_server = None
 
     # =========================================================================
     # Command Handling
