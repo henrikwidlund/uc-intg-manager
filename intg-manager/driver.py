@@ -178,11 +178,16 @@ async def _web_server_watchdog(interval: float = 30) -> None:
                         await asyncio.to_thread(ws.stop)
                     except Exception as e:
                         _LOG.warning("Watchdog: stop() during cleanup failed: %s", e)
+                # Only publish the new instance after the grace period
+                # confirms the background thread is still running. Hypercorn
+                # may bind-fail (port in use, OSError) after start() has
+                # already flipped `_running` True, so an early assignment
+                # leaks a doomed instance to other tasks.
                 new_ws = WebServer(remote_configs=_all_remote_configs)
-                _device_module._web_server_instance = new_ws
                 new_ws.start()
                 await asyncio.sleep(0.5)
                 if new_ws.is_running:
+                    _device_module._web_server_instance = new_ws
                     _LOG.info("Watchdog: web server restarted successfully")
                     ws = new_ws
                 else:
@@ -256,8 +261,17 @@ async def main():
                 len(_all_remote_configs),
             )
             ws = WebServer(remote_configs=_all_remote_configs)
-            _device_module._web_server_instance = ws
             ws.start()
+            # Verify the background thread actually bound before publishing.
+            # If start fails (port in use), leave the global as None and let
+            # the watchdog retry.
+            await asyncio.sleep(0.5)
+            if ws.is_running:
+                _device_module._web_server_instance = ws
+            else:
+                _LOG.error(
+                    "External mode boot: web server failed to start - watchdog will retry"
+                )
         else:
             # No remotes yet; watchdog brings the server up after setup.
             _LOG.info(

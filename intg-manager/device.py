@@ -548,8 +548,6 @@ class IntegrationManagerDevice(PollingDevice):
                 self._web_server = WebServer(
                     remote_configs=_all_remote_configs,
                 )
-                # Set global reference
-                _web_server_instance = self._web_server
             else:
                 # Web server already exists - reload with updated remote configs
                 # This happens when a new remote is added through setup
@@ -567,6 +565,8 @@ class IntegrationManagerDevice(PollingDevice):
 
                 if self._web_server.is_running:
                     _LOG.info("[%s] Web server started successfully", self.log_id)
+                    # Publish global reference only after verifying the bind succeeded
+                    _web_server_instance = self._web_server
                     await self._run_initial_integration_checks()
                 else:
                     _LOG.error(
@@ -574,6 +574,9 @@ class IntegrationManagerDevice(PollingDevice):
                         self.log_id,
                     )
                     self._web_server = None
+            else:
+                # Already running (e.g., reloaded). Ensure global points to it.
+                _web_server_instance = self._web_server
         except Exception as e:
             _LOG.error(
                 "[%s] Failed to start web server: %s", self.log_id, e, exc_info=True
@@ -793,64 +796,110 @@ class IntegrationManagerDevice(PollingDevice):
             _LOG.error("[%s] Error during scheduled backup: %s", self.log_id, e)
 
     async def _check_web_server_health(self) -> None:
-        """Restart the local web server if it should be running but is not accessible.
+        """
+        Check if the web server is healthy and restart if needed.
 
+        This verifies that the web server is actually accessible when it should be running.
+        If the server is supposed to be running but is not responding, it performs cleanup
+        and restarts the server.
+
+        Called during each poll cycle when the web server should be active.
         On-remote mode only — external mode uses the driver-level watchdog.
         """
         global _web_server_instance
 
+        # Use global web server instance
         web_server = _web_server_instance
+
+        # Only the web server owner should perform health checks
         if not self._is_owner() or not web_server or not web_server.is_running:
             return
 
-        if self._is_docked or not self._settings.shutdown_on_battery:
+        # Determine if web server should actually be running based on current conditions
+        should_be_running = False
+
+        if self._is_docked:
+            # Docked - always running
             should_be_running = True
-        else:
-            should_be_running = False
+        elif not self._settings.shutdown_on_battery:
+            # On battery but configured to keep running
+            should_be_running = True
 
         if not should_be_running:
-            return
+            return  # Server should not be running, skip health check
 
-        # TCP probe to confirm the server is actually accepting connections.
+        # Test if server is actually accessible
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            sock.settimeout(2)
-            if sock.connect_ex(("127.0.0.1", WEB_SERVER_PORT)) == 0:
+            sock.settimeout(2)  # 2 second timeout
+            result = sock.connect_ex(("127.0.0.1", WEB_SERVER_PORT))
+
+            if result == 0:
+                # Server is accessible
                 return
-        except OSError as e:
+
+            # Server is not accessible but should be running
             _LOG.warning(
-                "[%s] Web server health probe failed: %s - attempting restart",
+                "[%s] Web server should be running but is not accessible on port %d - attempting restart",
+                self.log_id,
+                WEB_SERVER_PORT,
+            )
+
+        except Exception as e:
+            _LOG.warning(
+                "[%s] Failed to check web server health: %s - attempting restart",
                 self.log_id,
                 e,
             )
         finally:
             sock.close()
 
-        _LOG.warning(
-            "[%s] Web server not accessible on port %d - attempting restart",
-            self.log_id,
-            WEB_SERVER_PORT,
-        )
+        # Server is not healthy - perform cleanup and restart
         try:
-            try:
-                web_server.stop()
-            except Exception as e:
-                _LOG.warning("[%s] Error stopping unhealthy web server: %s", self.log_id, e)
+            # Stop the current server instance (cleanup)
+            if web_server:
+                try:
+                    web_server.stop()
+                except Exception as e:
+                    _LOG.warning(
+                        "[%s] Error stopping unhealthy web server: %s", self.log_id, e
+                    )
+
             await asyncio.sleep(1)
-            new_server = WebServer(remote_configs=_all_remote_configs)
+
+            # Create new server instance
+            new_server = WebServer(
+                remote_configs=_all_remote_configs,
+            )
+
+            # Start the server
             new_server.start()
+
+            # Give it a moment to start
             await asyncio.sleep(0.5)
+
             if new_server.is_running:
-                _LOG.info("[%s] Web server successfully restarted", self.log_id)
+                _LOG.info(
+                    "[%s] Web server successfully restarted after health check failure",
+                    self.log_id,
+                )
+                # Update both global and local references
                 _web_server_instance = new_server
                 self._web_server = new_server
             else:
-                _LOG.error("[%s] Web server failed to restart", self.log_id)
+                _LOG.error(
+                    "[%s] Web server failed to restart after health check failure",
+                    self.log_id,
+                )
                 _web_server_instance = None
                 self._web_server = None
+
         except Exception as e:
             _LOG.error(
-                "[%s] Failed to restart web server: %s", self.log_id, e, exc_info=True
+                "[%s] Failed to restart web server during health check: %s",
+                self.log_id,
+                e,
+                exc_info=True,
             )
             _web_server_instance = None
             self._web_server = None
