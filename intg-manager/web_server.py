@@ -544,8 +544,12 @@ async def _refresh_version_cache(remote_id: str | None = None) -> None:
     if remote_id is None:
         remote_id = get_active_remote_id()
 
-    client = _remote_clients.get(remote_id) if remote_id else None
-    if not client or not _github_client or not remote_id:
+    # Skip when the remote is known offline to not lock up the UI
+    if not remote_id or not is_remote_online(remote_id):
+        return
+
+    client = _remote_clients.get(remote_id)
+    if not client or not _github_client:
         return
 
     try:
@@ -673,7 +677,11 @@ async def _get_installed_integrations(
     if remote_id is None:
         remote_id = get_active_remote_id()
 
-    client = _remote_clients.get(remote_id) if remote_id else None
+    # Skip when the remote is known offline to not lock up the UI
+    if not remote_id or not is_remote_online(remote_id):
+        return []
+
+    client = _remote_clients.get(remote_id)
     if not client:
         return []
 
@@ -989,7 +997,11 @@ async def _get_available_integrations(
     if remote_id is None:
         remote_id = get_active_remote_id()
 
-    client = _remote_clients.get(remote_id) if remote_id else None
+    # Skip when the remote is known offline to not lock up the UI
+    if remote_id and not is_remote_online(remote_id):
+        client = None
+    else:
+        client = _remote_clients.get(remote_id) if remote_id else None
 
     registry = load_registry()
 
