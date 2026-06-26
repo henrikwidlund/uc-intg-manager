@@ -7074,6 +7074,8 @@ class WebServer:
             return_exceptions=True,
         )
         for rid, result in zip(remote_ids, results):
+            if isinstance(result, asyncio.CancelledError):
+                raise result
             if isinstance(result, BaseException):
                 _LOG.warning("[%s] Connectivity probe raised: %r", rid, result)
 
