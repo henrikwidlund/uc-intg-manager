@@ -182,14 +182,7 @@ def get_active_remote_id() -> str | None:
 
 
 def _get_active_remote_client() -> RemoteClient | None:
-    """Get the RemoteClient for the currently active remote.
-
-    Returns None when the active remote is known to be offline so that web
-    routes short-circuit through their existing `if not client:` fallback
-    instead of issuing an HTTP request that will hang for the full
-    REQUEST_TIMEOUT (40s) waiting on a sleeping/powered-off remote. The
-    UI then stays responsive even when the active remote is unreachable.
-    """
+    """Get the RemoteClient for the currently active remote, or None if offline."""
     remote_id = get_active_remote_id()
     if not remote_id:
         return None
@@ -7071,8 +7064,13 @@ class WebServer:
 
     async def check_all_remote_connectivity(self) -> None:
         """Test connectivity for every configured remote and update online status."""
-        for remote_id in list(_remote_clients.keys()):
-            await self.check_connectivity(remote_id)
+        remote_ids = list(_remote_clients.keys())
+        if not remote_ids:
+            return
+        await asyncio.gather(
+            *(self.check_connectivity(rid) for rid in remote_ids),
+            return_exceptions=True,
+        )
 
     async def check_error_states(self, remote_id: str) -> None:
         """

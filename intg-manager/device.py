@@ -507,9 +507,7 @@ class IntegrationManagerDevice(PollingDevice):
         global _web_server_instance
 
         try:
-            # In external mode, the web server may already be running globally
-            # (e.g., started eagerly at driver boot, or by a sibling remote that
-            # connected earlier). Reuse it and run this remote's initial checks.
+            # In external mode, check if web server is already running globally
             if (
                 self._is_external
                 and _web_server_instance
@@ -519,6 +517,7 @@ class IntegrationManagerDevice(PollingDevice):
                     "[%s] Web server already running in external mode - reusing",
                     self.log_id,
                 )
+                # Set local reference to global instance
                 self._web_server = _web_server_instance
                 await self._run_initial_integration_checks()
                 return
@@ -586,13 +585,13 @@ class IntegrationManagerDevice(PollingDevice):
 
         _LOG.info("[%s] Triggering initial integration checks...", self.log_id)
         try:
-            # Per-remote: version updates
+            # Per-remote: Check for version updates
             await self._web_server.refresh_integration_versions(self.identifier)
-            # Per-remote: new integrations in registry
+            # Per-remote: Check for new integrations in registry
             await self._web_server.check_new_integrations(self.identifier)
-            # Per-remote: orphaned entities in activities
+            # Per-remote: Check for orphaned entities in activities
             await self._web_server.check_orphaned_entities(self.identifier)
-            # Shared (owner only): system messages from GitHub
+            # Shared (owner only): Check for new system messages from GitHub
             if self._is_owner():
                 self._web_server.check_system_messages()
             _LOG.info("[%s] Initial integration checks complete", self.log_id)

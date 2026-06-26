@@ -28,8 +28,7 @@ _LOG = logging.getLogger(__name__)
 
 
 def _remote_id_from_ws(websocket) -> str | None:
-    """Map an inbound ucapi WebSocket to the identifier of the configured remote
-    whose IP matches the client's remote_address. Returns None if no match."""
+    """Identifier of the configured remote whose IP matches the WebSocket peer."""
     if not websocket or not getattr(websocket, "remote_address", None):
         return None
     host = websocket.remote_address[0]
@@ -40,23 +39,11 @@ def _remote_id_from_ws(websocket) -> str | None:
 
 
 class IntegrationManagerDriver(BaseIntegrationDriver):
-    """
-    Custom driver that dispatches connect/disconnect/standby events to the
-    specific remote that originated them.
+    """Dispatch ucapi events to the originating remote (by client IP).
 
-    Each Remote opens its own ucapi WebSocket to this integration. The ucapi
-    library forwards the originating WebSocket as a `websocket` kwarg to
-    event handlers (see `ucapi.api._wrap_event_listener`), letting us look
-    up the remote by client IP.
-
-    Fallbacks when `websocket` is missing or can't be mapped to a configured
-    remote:
-
-      * `connect` / `exit-standby` → connect every configured device
-        (safe to fan out; reconnecting a healthy device is idempotent).
-      * `disconnect` / `enter-standby` → disconnect the owner device only
-        (first remote in config). Avoids mass-disconnect while still
-        responding to the lifecycle signal that some remote went away.
+    Falls back when the websocket kwarg is missing or unmappable:
+      * connect / exit-standby → all configured devices
+      * disconnect / enter-standby → owner only (first in config)
     """
 
     def _owner_device(self) -> IntegrationManagerDevice | None:
@@ -68,14 +55,9 @@ class IntegrationManagerDriver(BaseIntegrationDriver):
 
     async def on_r2_connect_cmd(self, websocket=None) -> None:
         """Connect the originating remote (or all, if source unknown)."""
-        # The integration-level DeviceState is intentionally only set to
-        # CONNECTED here and never flipped back. In external mode the
-        # integration host is reachable for the lifetime of the process
-        # regardless of any single remote's lifecycle, so reporting
-        # DISCONNECTED on a remote's standby/disconnect would mislead
-        # every *other* still-connected remote that observes the
-        # broadcast state. This matches the BaseIntegrationDriver default
-        # (connect sets CONNECTED, disconnect/standby leave state alone).
+        # DeviceState is set once and never flipped back: in external mode
+        # the host is reachable while the process is alive, and the state
+        # broadcasts to every connected remote.
         await self.api.set_device_state(ucapi.DeviceStates.CONNECTED)
         rid = _remote_id_from_ws(websocket)
         device = self._device_instances.get(rid) if rid else None
@@ -151,13 +133,7 @@ class IntegrationManagerDriver(BaseIntegrationDriver):
 
 
 def _web_server_port_reachable(port: int = WEB_SERVER_PORT, timeout: float = 2.0) -> bool:
-    """Return True if a TCP connect to 127.0.0.1:port succeeds.
-
-    The watchdog uses this in addition to the `is_running` flag because
-    Hypercorn can stop serving (deadlock, stuck loop, blocked thread)
-    without flipping `_running` to False. The flag-only check would then
-    keep reporting "healthy" while the UI is dead.
-    """
+    """Return True if a TCP connect to 127.0.0.1:port succeeds."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         sock.settimeout(timeout)
@@ -169,34 +145,21 @@ def _web_server_port_reachable(port: int = WEB_SERVER_PORT, timeout: float = 2.0
 
 
 async def _web_server_watchdog(interval: float = 30) -> None:
-    """In external mode, keep the web server alive and remote-status fresh,
-    independent of polling.
+    """Restart the web server if it stops serving and refresh remote status.
 
-    Polling stops when a remote disconnects/standbys (or hasn't connected
-    yet after a process restart), so the per-poll health check in
-    device.py can't recover a dead Hypercorn thread or seed connectivity
-    state by itself. This task:
-
-      * respawns the web server when its background thread exits
-        (`_running` flipped False), the instance was cleared, or the
-        listening port stops accepting connections even though the
-        flag still reads True, and
-      * probes every configured remote so the UI shows a real online
-        status even when no device has called `establish_connection`
-        yet.
+    Restart triggers: instance cleared, `is_running` is False, or the
+    listening port stops accepting connections. The connectivity probe
+    runs every cycle to keep status fresh while device polling is idle.
     """
-    # Brief delay so the eagerly-started server has time to bind before
-    # the first probe runs.
-    await asyncio.sleep(2)
+    # Let the server bind before the first probe.
+    await asyncio.sleep(0.2)
     while True:
         try:
             if not _all_remote_configs:
                 await asyncio.sleep(interval)
                 continue
             ws = _device_module._web_server_instance
-            # The port-reachability check runs in a worker thread because
-            # `socket.connect_ex` is blocking; a 2-second hang on the
-            # event loop would starve other tasks every watchdog cycle.
+            # socket.connect_ex blocks; run off-loop.
             port_alive = (
                 await asyncio.to_thread(_web_server_port_reachable)
                 if ws is not None
@@ -211,9 +174,7 @@ async def _web_server_watchdog(interval: float = 30) -> None:
                 )
                 if ws is not None:
                     try:
-                        # WebServer.stop() joins the Hypercorn thread (up to
-                        # 5s). Run it off-loop so other driver/device tasks
-                        # keep making progress during the restart window.
+                        # stop() joins the Hypercorn thread (up to 5s).
                         await asyncio.to_thread(ws.stop)
                     except Exception as e:
                         _LOG.warning("Watchdog: stop() during cleanup failed: %s", e)
@@ -229,8 +190,6 @@ async def _web_server_watchdog(interval: float = 30) -> None:
                     _device_module._web_server_instance = None
                     continue
 
-            # Heartbeat probe — keeps `_remote_online` truthful while
-            # polling is idle (no remote connected, just-restarted process).
             try:
                 await ws.check_all_remote_connectivity()
             except Exception as e:
@@ -284,14 +243,9 @@ async def main():
     # Register all configured devices from config file
     await driver.register_all_configured_devices()
 
-    # In external/Docker mode, the web server must stay reachable independent
-    # of any remote's polling lifecycle. On-remote installs rely on dock/charge
-    # state instead and start the web server lazily.
+    # External mode: web server is independent of remote lifecycle.
+    # On-remote installs start it lazily from dock/charge state.
     if is_external_mode():
-        # Eager start covers the common case: container restarts with one or
-        # more remotes already configured. First-run setup (no remotes yet)
-        # falls through; the watchdog will bring up the server once a remote
-        # is added via setup.
         if _all_remote_configs:
             _LOG.info(
                 "External mode detected at boot - starting web server with %d configured remote(s)",
@@ -301,16 +255,11 @@ async def main():
             _device_module._web_server_instance = ws
             ws.start()
         else:
+            # No remotes yet; watchdog brings the server up after setup.
             _LOG.info(
-                "External mode detected at boot - no remotes configured yet, watchdog will start the web server once setup completes",
+                "External mode detected at boot - no remotes configured yet",
             )
 
-        # Watchdog runs for the lifetime of the driver process. It:
-        #   * respawns the web server if its background thread dies,
-        #   * brings up the server the first time after a remote is added
-        #     via setup (handles the empty-config-at-boot case), and
-        #   * probes remote connectivity so UI status is fresh independent
-        #     of device polling.
         asyncio.create_task(_web_server_watchdog(interval=30))
 
     # Set up the setup handler
