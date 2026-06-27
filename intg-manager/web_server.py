@@ -45,6 +45,7 @@ from const import (
     RemoteConfig,
     Settings,
     UIPreferences,
+    is_external_mode,
 )
 from data_migration import migrate as migrate_v1_to_v2
 from quart import (
@@ -136,19 +137,55 @@ _sync_github_client: _SyncGitHubClient | None = None
 _user_language_code: str = "en_GB"  # Default to remote's default
 
 
-@app.before_serving
-async def _startup_fetch_localization() -> None:
-    """Fetch user language preference from the first configured remote at startup."""
+async def _fetch_localization_background() -> None:
+    """Fetch user language preference from any responsive configured remote.
+
+    Probes every remote in parallel and uses the first successful response;
+    remaining probes are canceled. Slow/unreachable remotes don't delay
+    detection if any other remote is responsive.
+    """
     global _user_language_code
-    if _remote_clients:
-        first_client = next(iter(_remote_clients.values()))
-        try:
-            localization = await first_client.get_localization()
+    if not _remote_clients:
+        return
+    tasks = [
+        asyncio.create_task(client.get_localization())
+        for client in _remote_clients.values()
+    ]
+    try:
+        for coro in asyncio.as_completed(tasks):
+            try:
+                localization = await coro
+            except Exception as e:
+                _LOG.debug("Localization probe failed on one remote: %s", e)
+                continue
             if localization and localization.get("language_code"):
                 _user_language_code = localization["language_code"]
                 _LOG.info("User language set to: %s", _user_language_code)
-        except Exception as e:
-            _LOG.warning("Failed to fetch localization settings at startup: %s", e)
+                return
+        _LOG.warning("Failed to fetch localization settings from any remote")
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def _log_background_task_exception(task: asyncio.Task) -> None:
+    """Done-callback that logs unexpected exceptions from fire-and-forget tasks."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        _LOG.warning("Background task %s raised: %r", task.get_name(), exc)
+
+
+@app.before_serving
+async def _startup_fetch_localization() -> None:
+    """Schedule localization fetch without blocking startup."""
+    task = asyncio.create_task(
+        _fetch_localization_background(), name="fetch-localization"
+    )
+    task.add_done_callback(_log_background_task_exception)
 
 
 @app.before_request
@@ -534,8 +571,12 @@ async def _refresh_version_cache(remote_id: str | None = None) -> None:
     if remote_id is None:
         remote_id = get_active_remote_id()
 
-    client = _remote_clients.get(remote_id) if remote_id else None
-    if not client or not _github_client or not remote_id:
+    # Skip when the remote is known offline to not lock up the UI
+    if not remote_id or not is_remote_online(remote_id):
+        return
+
+    client = _remote_clients.get(remote_id)
+    if not client or not _github_client:
         return
 
     try:
@@ -663,7 +704,11 @@ async def _get_installed_integrations(
     if remote_id is None:
         remote_id = get_active_remote_id()
 
-    client = _remote_clients.get(remote_id) if remote_id else None
+    # Skip when the remote is known offline to not lock up the UI
+    if not remote_id or not is_remote_online(remote_id):
+        return []
+
+    client = _remote_clients.get(remote_id)
     if not client:
         return []
 
@@ -978,6 +1023,12 @@ async def _get_available_integrations(
     """
     if remote_id is None:
         remote_id = get_active_remote_id()
+
+    # Short-circuit when the remote is known offline. Otherwise every entry
+    # would be marked uninstalled, misrepresenting the real remote state to
+    # callers that don't separately gate on is_remote_online().
+    if remote_id and not is_remote_online(remote_id):
+        return []
 
     client = _remote_clients.get(remote_id) if remote_id else None
 
@@ -3114,6 +3165,37 @@ async def get_integration_card(driver_id: str):
     longer carries the polling trigger, HTMX stops polling automatically.
     """
     remote_id = get_active_remote_id()
+    if remote_id is None:
+        # No remote configured / no active remote — nothing to render.
+        return "", 204
+
+    settings = Settings.load(remote_id=remote_id)
+    remote_ip = (
+        _get_active_remote_client()._address  # ty:ignore[unresolved-attribute]
+        if _get_active_remote_client()
+        else None
+    )
+
+    # Remote temporarily offline (e.g., rebooting mid inplace-update). Keep
+    # the polling trigger alive with a reconnecting placeholder so HTMX
+    # keeps refreshing until the remote comes back. Returning 204 here
+    # would stop the poller and strand the UI in an "updating" state.
+    if not is_remote_online(remote_id):
+        placeholder = IntegrationInfo(
+            instance_id=driver_id,
+            driver_id=driver_id,
+            name="Reconnecting…",
+            version="",
+            state="DISCONNECTED",
+        )
+        return await render_template(
+            "partials/integration_card.html",
+            integration=placeholder,
+            settings=settings,
+            remote_ip=remote_ip,
+            reconnecting=True,
+        )
+
     integrations = await _get_installed_integrations(remote_id)
     integration = next(
         (
@@ -3125,13 +3207,6 @@ async def get_integration_card(driver_id: str):
     )
     if not integration:
         return "", 204
-
-    settings = Settings.load(remote_id=remote_id)
-    remote_ip = (
-        _get_active_remote_client()._address  # ty:ignore[unresolved-attribute]
-        if _get_active_remote_client()
-        else None
-    )
 
     reconnecting = integration.state in ("DISCONNECTED", "ERROR")
     return await render_template(
@@ -4414,6 +4489,10 @@ async def self_update():
     """
     if not _get_active_remote_client() or not _github_client:
         return jsonify({"status": "error", "message": "Service not initialized"}), 500
+    if not is_remote_online(get_active_remote_id()):
+        return jsonify(
+            {"status": "error", "message": "Remote is offline"}
+        ), 503
 
     form = await request.form
     version = request.args.get("version") or form.get("version")
@@ -5082,9 +5161,9 @@ async def settings_page():
     """Render the settings page."""
     settings = Settings.load(remote_id=get_active_remote_id())
     ui_prefs = UIPreferences.load()
-    # Detect if running in Docker/external mode
+    # Detect if running in external mode (Docker, server, or local dev)
+    is_external = is_external_mode()
     uc_config_home = os.getenv("UC_CONFIG_HOME", "")
-    is_external = uc_config_home.startswith("/config")
     _LOG.info(
         f"Settings page: UC_CONFIG_HOME='{uc_config_home}', is_external={is_external}"
     )
@@ -7010,6 +7089,11 @@ class WebServer:
         """Check if the web server is running."""
         return self._running
 
+    @property
+    def port(self) -> int:
+        """Port the web server is configured to bind to."""
+        return self._port
+
     async def refresh_integration_versions(self, remote_id: str) -> None:
         """
         Refresh version information for all installed integrations.
@@ -7049,8 +7133,18 @@ class WebServer:
 
     async def check_all_remote_connectivity(self) -> None:
         """Test connectivity for every configured remote and update online status."""
-        for remote_id in list(_remote_clients.keys()):
-            await self.check_connectivity(remote_id)
+        remote_ids = list(_remote_clients.keys())
+        if not remote_ids:
+            return
+        results = await asyncio.gather(
+            *(self.check_connectivity(rid) for rid in remote_ids),
+            return_exceptions=True,
+        )
+        for rid, result in zip(remote_ids, results):
+            if isinstance(result, asyncio.CancelledError):
+                raise result
+            if isinstance(result, BaseException):
+                _LOG.warning("[%s] Connectivity probe raised: %r", rid, result)
 
     async def check_error_states(self, remote_id: str) -> None:
         """
@@ -7077,9 +7171,19 @@ class WebServer:
             )
 
     async def check_all_error_states(self) -> None:
-        """Check integration error states for every configured remote."""
-        for remote_id in list(_remote_clients.keys()):
-            await self.check_error_states(remote_id)
+        """Check integration error states for every configured remote concurrently."""
+        remote_ids = list(_remote_clients.keys())
+        if not remote_ids:
+            return
+        results = await asyncio.gather(
+            *(self.check_error_states(rid) for rid in remote_ids),
+            return_exceptions=True,
+        )
+        for rid, result in zip(remote_ids, results):
+            if isinstance(result, asyncio.CancelledError):
+                raise result
+            if isinstance(result, BaseException):
+                _LOG.warning("[%s] Error-state check raised: %r", rid, result)
 
     async def check_new_integrations(self, remote_id: str) -> None:
         """
