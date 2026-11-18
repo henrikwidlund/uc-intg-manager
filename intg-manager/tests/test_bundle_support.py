@@ -114,6 +114,7 @@ def remote(monkeypatch):
     )
     client = _client(api)
     monkeypatch.setitem(ws._remote_clients, "test-remote", client)
+    monkeypatch.setitem(ws._remote_online, "test-remote", True)
     monkeypatch.setattr(ws, "_remote_capabilities_ready", {"test-remote"})
     monkeypatch.setattr(ws, "_get_active_remote_client", lambda: client)
     monkeypatch.setattr(ws, "get_active_remote_id", lambda: "test-remote")
