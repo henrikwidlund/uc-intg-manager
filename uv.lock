@@ -1622,7 +1622,7 @@ wheels = [
 
 [[package]]
 name = "uc-intg-manager"
-version = "3.3.0"
+version = "3.3.1"
 source = { virtual = "." }
 dependencies = [
     { name = "aiohttp" },
@@ -1706,7 +1706,7 @@ wheels = [
 
 [[package]]
 name = "unfurled"
-version = "0.6.5"
+version = "0.6.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -1715,9 +1715,9 @@ dependencies = [
     { name = "websockets" },
     { name = "zeroconf" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b8/59/9b8e26e11e4b620751ef947a78fec77f55ee5591a7d8ca9fecbcbace84f3/unfurled-0.6.5.tar.gz", hash = "sha256:c0769f06662168772ba3fe75d021fb5af4822f548c2ed0aad220b432013bca5d", size = 188603, upload-time = "2026-11-15T16:21:36.752Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/05/c5/af8eb8076c127a4e64a05a25a09ccc7d9d60faa2fbcfdea1487ad74e3679/unfurled-0.6.6.tar.gz", hash = "sha256:e93e8f95e4d02fb86da9540adc9d3780e5dabf2198171b108bec0f5abaf39bdb", size = 189575, upload-time = "2026-11-18T00:32:07.807Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/71/c8/80def9370c79ba8f481a1afc9e70f6d0ca4bdf540d2a4c7d62596e275675/unfurled-0.6.5-py3-none-any.whl", hash = "sha256:dce1afc6d979e75db77fc64d9f9852ad14bb636017915e6499ddaae4610b5c9a", size = 70168, upload-time = "2026-11-15T16:21:35.263Z" },
+    { url = "https://files.pythonhosted.org/packages/54/8c/7e6b8c9499dc3028a2443ffa6626afe5337ef711c08f442a94b2a4e40a95/unfurled-0.6.6-py3-none-any.whl", hash = "sha256:bb8dfdee38b0cb12d960331d9aa0ea7b678829957db1d444d870ece3352365bb", size = 70250, upload-time = "2026-11-18T00:32:06.426Z" },
 ]
 
 [[package]]
